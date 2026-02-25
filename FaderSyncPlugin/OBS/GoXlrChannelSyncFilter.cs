@@ -91,10 +91,9 @@ public class GoXlrChannelSyncFilter
         var deviceSerial = Marshal.PtrToStringUTF8((IntPtr)context->DeviceSerial);
         var channelName = Marshal.PtrToStringUTF8((IntPtr)context->ChannelName);
         var submix = Marshal.PtrToStringUTF8((IntPtr)context->Submix);
-        
 
         var target = Obs.obs_filter_get_parent(context->Source);
-	var systemVolume = 0;
+	    var systemVolume = 0;
         if (submix == "B" && utility.Status["mixers"]?[deviceSerial ?? ""]?["levels"]!["submix"] != null) {
             systemVolume = utility.Status["mixers"]?[deviceSerial ?? ""]?["levels"]?["submix"]?["inputs"]?[channelName ?? ""]?["volume"]?
                 .GetValue<int>() ?? 0;
@@ -106,20 +105,29 @@ public class GoXlrChannelSyncFilter
         // Ok, the GoXLR seems to decrease the volume by 1dB for every (on average) 4.85 volume steps, it
         // doesn't appear to be an exact science, but this should get us close enough to accurate for now.
 
-        // So, start simply, how many multiples of 4.85 are we below max (number of dB we need to decrease by)?
-        var utilityBase = (255f - systemVolume) / 4.85f;
-
-        // Below 140, the adjustment increases, so we need to accommodate for that here.
-        if (systemVolume < 140)
+        float obsVolume;
+        if (systemVolume == 0)
         {
-            var count = 140 - systemVolume;
-            utilityBase += count * 0.115f;
+            // Absolute silence in OBS (-inf dB)
+            obsVolume = 0.0f;
         }
-        
-        utilityBase -= (float)context->VolumeOffset;
+        else
+        {
+	        // So, start simply, how many multiples of 4.85 are we below max (number of dB we need to decrease by)?
+	        var utilityBase = (255f - systemVolume) / 4.85f;
 
-        // Now we convert this into an OBS value...
-        var obsVolume = (float)Math.Pow(10, -utilityBase / 20f);
+	        // Below 140, the adjustment increases, so we need to accommodate for that here.
+	        if (systemVolume < 140)
+	        {
+	            var count = 140 - systemVolume;
+	            utilityBase += count * 0.115f;
+	        }
+
+	        utilityBase -= (float)context->VolumeOffset;
+
+	        // Now we convert this into an OBS value...
+	        obsVolume = (float)Math.Pow(10, -utilityBase / 20f);
+		}
 
         // check if channel is muted
         var isMuted = false;
