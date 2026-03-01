@@ -13,7 +13,7 @@
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <StripSymbols>true</StripSymbols>
         <PublishAot>true</PublishAot>
-        <PublisheTrimmed>true</PublisheTrimmed>
+        <PublishTrimmed>true</PublishTrimmed>
         <IsAotCompatible>true</IsAotCompatible>
         <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     </PropertyGroup>

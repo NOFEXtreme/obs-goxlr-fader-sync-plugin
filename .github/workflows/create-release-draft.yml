@@ -1,34 +1,32 @@
 name: Create Release Draft
 on: workflow_dispatch
-jobs: 
-  get_version:
-    uses: ./.github/workflows/get-version.yml
-  
+
+jobs:
   publish:
     uses: ./.github/workflows/publish-solution.yml
-    
+
   create_release_draft:
-    needs: [ get_version, publish ]
-    runs-on: ubuntu-22.04
+    needs: [ publish ]
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
     steps:
-      - name: "Download Artifacts"
-        uses: actions/download-artifact@v4
-        # downloaded files will be stored at ./windows-artifacts and ./linux-artifacts
-        
-      - name: "Print Artifacts (Debug only)"
+      - name: Download artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Print Artifacts (Debug only)
         if: runner.debug == '1'
-        run: |
-          tree
-        
-      - name: "Create Release"
+        run: tree artifacts
+
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "Release ${{ needs.get_version.outputs.version }}"
-          tag_name: "v${{ needs.get_version.outputs.version }}"
-          body: "TODO: Write Changelog"
+          name: "Release ${{ needs.publish.outputs.version }}"
+          tag_name: "v${{ needs.publish.outputs.version }}"
+          body: "TODO: Write changelog"
           draft: true
           prerelease: true
           fail_on_unmatched_files: true
-          files: |
-            ./windows-artifacts/package/*.zip
-            ./linux-artifacts/package/*.zip
+          files: artifacts/*/*.zip

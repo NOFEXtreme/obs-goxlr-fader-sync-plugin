@@ -1,20 +1,26 @@
 name: "Get Project Version"
 on:
-  workflow_call: 
+  workflow_call:
     outputs:
       version:
         description: "The FaderSyncPlugin Version Number"
         value: ${{ jobs.get_version.outputs.version }}
-        
-jobs: 
+
+jobs:
   get_version:
     name: "Get Version"
-    runs-on: Ubuntu-22.04
-    outputs: 
+    runs-on: ubuntu-24.04
+    outputs:
       version: ${{ steps.store_version.outputs.version }}
     steps:
       - name: "Checkout Repository"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: "Setup .NET"
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 9.0.x
+
       - name: "Store Version"
         id: store_version
-        run: echo "version=$(grep -oP '<Version>\K[^<]+' ./FaderSyncPlugin/FaderSyncPlugin.csproj)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(dotnet msbuild ./FaderSyncPlugin/FaderSyncPlugin.csproj -nologo --getProperty:Version)" >> "$GITHUB_OUTPUT"

@@ -1,51 +1,103 @@
 name: Publish Solution
-on: [ workflow_dispatch, workflow_call ]
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      version:
+        description: "FaderSyncPlugin Version Number"
+        value: ${{ jobs.get_version.outputs.version }}
+
 jobs:
   get_version:
     uses: ./.github/workflows/get-version.yml
-    
+
   publish_windows:
-    name: "Create Windows Artifacts"
+    name: Create Windows Artifacts
     needs: [ get_version ]
     runs-on: windows-latest
+
     steps:
-      - name: "Checkout Repository"
-        uses: actions/checkout@v4
-      - name: "Setup .NET Cli"
-        uses: actions/setup-dotnet@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '8.0.x'
-      - name: "Build Solution"
-        run: dotnet publish -r win-x64 --self-contained -p:Version="${{ needs.get_version.outputs.version }}" -p:FileVersion="${{ needs.get_version.outputs.version }}" -p:InformationalVersion="${{ needs.get_version.outputs.version }}"
-      - name: "Upload Artifacts"
-        uses: actions/upload-artifact@v4
+          dotnet-version: 9.0.x
+
+      - name: Build
+        run: |
+          dotnet publish -c Release -r win-x64 --self-contained `
+            -p:Version="${{ needs.get_version.outputs.version }}" `
+            -p:FileVersion="${{ needs.get_version.outputs.version }}" `
+            -p:InformationalVersion="${{ needs.get_version.outputs.version }}"
+
+      - name: Package to zip (Windows)
+        run: |
+          $pub = "FaderSyncPlugin/bin/Release/net9.0/win-x64/publish"
+          $zip = "dist/FaderSyncPlugin-win-x64-${{ needs.get_version.outputs.version }}.zip"
+
+          Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
+
+          New-Item -ItemType Directory -Force "dist/obs-plugins/64bit" | Out-Null
+          New-Item -ItemType Directory -Force "dist/data/obs-plugins/FaderSyncPlugin/locale" | Out-Null
+
+          Copy-Item "$pub/*.dll" "dist/obs-plugins/64bit/" -Force
+          # Copy-Item "$pub/locale/*" "dist/data/obs-plugins/FaderSyncPlugin/locale/" -Force
+
+          Compress-Archive -Path "dist/obs-plugins","dist/data" -DestinationPath $zip
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v7
         with:
           name: windows-artifacts
-          path: |
-            ./FaderSyncPlugin/bin/Release/net9.0/win-x64/package/*.zip
-            ./FaderSyncPlugin/bin/Release/net9.0/win-x64/publish/*
-  
+          path: dist/*.zip
+          compression-level: 0
+          if-no-files-found: error
+
   publish_linux:
-    name: "Create Linux Artifacts"
+    name: Create Linux Artifacts
     needs: [ get_version ]
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
+
     steps:
-      - name: "Checkout Repository"
-        uses: actions/checkout@v4
-      - name: "Setup AOT Dependencies"
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Setup AOT Dependencies
         run: |
           sudo apt update
-          sudo apt install clang zlib1g-dev -y
-      - name: "Setup .NET Cli"
-        uses: actions/setup-dotnet@v4
+          sudo apt install clang zlib1g-dev zip -y
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '8.0.x'
-      - name: "Build Solution"
-        run: dotnet publish -r linux-x64 --self-contained -p:Version="${{ needs.get_version.outputs.version }}" -p:FileVersion="${{ needs.get_version.outputs.version }}" -p:InformationalVersion="${{ needs.get_version.outputs.version }}"
-      - name: "Upload Artifacts"
-        uses: actions/upload-artifact@v4
+          dotnet-version: 9.0.x
+
+      - name: Build
+        run: |
+          dotnet publish -c Release -r linux-x64 --self-contained \
+            -p:Version="${{ needs.get_version.outputs.version }}" \
+            -p:FileVersion="${{ needs.get_version.outputs.version }}" \
+            -p:InformationalVersion="${{ needs.get_version.outputs.version }}"
+
+      - name: Package to zip (Linux)
+        run: |
+          pub="FaderSyncPlugin/bin/Release/net9.0/linux-x64/publish"
+          zip="dist/FaderSyncPlugin-linux-x64-${{ needs.get_version.outputs.version }}.zip"
+
+          rm -rf dist
+          mkdir -p dist/obs-plugins/64bit dist/data/obs-plugins/FaderSyncPlugin/locale
+
+          cp "$pub"/*.so dist/obs-plugins/64bit/
+          # cp "$pub"/locale/* dist/data/obs-plugins/FaderSyncPlugin/locale/
+
+          (cd dist && zip -r "../$zip" obs-plugins data)
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v7
         with:
           name: linux-artifacts
-          path: |
-            ./FaderSyncPlugin/bin/Release/net9.0/linux-x64/package/*.zip
-            ./FaderSyncPlugin/bin/Release/net9.0/linux-x64/publish/*
+          path: dist/*.zip
+          compression-level: 0
+          if-no-files-found: error

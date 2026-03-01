@@ -12,31 +12,42 @@ namespace FaderSync.OBS;
 public class GoXlrChannelSyncFilter
 {
     private static readonly Logger Log = new(typeof(Plugin));
+    private static IntPtr _filterIdPtr = IntPtr.Zero;
 
     /**
      * Registers the Filter in OBS.
      */
     public static unsafe void Register(string moduleBaseName)
     {
-        var sourceInfo = new obs_source_info();
-        fixed (byte* id = Encoding.UTF8.GetBytes($"{moduleBaseName}/{nameof(GoXlrChannelSyncFilter)}"))
-        {
-            sourceInfo.id = (sbyte*)id;
-            sourceInfo.type = obs_source_type.OBS_SOURCE_TYPE_FILTER;
-            sourceInfo.output_flags = ObsSource.OBS_SOURCE_AUDIO;
-            sourceInfo.get_name = &GetName;
-            sourceInfo.create = &Create;
-            sourceInfo.destroy = &Destroy;
-            sourceInfo.video_tick = &Tick;
-            sourceInfo.update = &Update;
-            sourceInfo.get_defaults = &GetDefaults;
-            sourceInfo.get_properties = &GetProperties;
+        Cleanup();
 
-            ObsSource.obs_register_source_s(&sourceInfo, (nuint)Marshal.SizeOf(sourceInfo));
-        }
+        var sourceInfo = new obs_source_info();
+        var filterId = $"{moduleBaseName}/{nameof(GoXlrChannelSyncFilter)}";
+
+        _filterIdPtr = Marshal.StringToCoTaskMemUTF8(filterId);
+
+        sourceInfo.id = (sbyte*)_filterIdPtr;
+        sourceInfo.type = obs_source_type.OBS_SOURCE_TYPE_FILTER;
+        sourceInfo.output_flags = ObsSource.OBS_SOURCE_AUDIO;
+        sourceInfo.get_name = &GetName;
+        sourceInfo.create = &Create;
+        sourceInfo.destroy = &Destroy;
+        sourceInfo.video_tick = &Tick;
+        sourceInfo.update = &Update;
+        sourceInfo.get_defaults = &GetDefaults;
+        sourceInfo.get_properties = &GetProperties;
+
+        ObsSource.obs_register_source_s(&sourceInfo, (nuint)Marshal.SizeOf(sourceInfo));
     }
 
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static void Cleanup()
+    {
+        if (_filterIdPtr == IntPtr.Zero) return;
+        Marshal.FreeCoTaskMem(_filterIdPtr);
+        _filterIdPtr = IntPtr.Zero;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static unsafe sbyte* GetName(void* data)
     {
         fixed (byte* namePtr = "Sync volume with GoXLR Channel"u8)
@@ -49,7 +60,7 @@ public class GoXlrChannelSyncFilter
      * Initialized the Filter for OBS and also creates a context since this is not a class.
      * This function can be seen as some sort of constructor.
      */
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static unsafe void* Create(obs_data* settings, obs_source* source)
     {
         Log.Debug("Filter created!");
@@ -58,18 +69,24 @@ public class GoXlrChannelSyncFilter
         context->Source = source;
         context->Settings = settings;
 
-        fixed (byte* sChannelNameId = "CHANNEL_NAME"u8.ToArray(), sDeviceSerialId = "DEVICE_SERIAL"u8.ToArray(), sSubmixId = "SUBMIX"u8.ToArray(), sVolumeOffsetId = "VOLUME_OFFSET"u8.ToArray())
+        fixed (byte*
+               sChannelNameId ="CHANNEL_NAME"u8.ToArray(),
+               sDeviceSerialId = "DEVICE_SERIAL"u8.ToArray(),
+               sSubmixId = "SUBMIX"u8.ToArray(),
+               sVolumeOffsetId = "VOLUME_OFFSET"u8.ToArray(), 
+               sVerboseLoggingId = "VERBOSE_LOGGING"u8.ToArray())
         {
             context->DeviceSerial = ObsData.obs_data_get_string(settings, (sbyte*)sDeviceSerialId);
             context->ChannelName = ObsData.obs_data_get_string(settings, (sbyte*)sChannelNameId);
             context->Submix = ObsData.obs_data_get_string(settings, (sbyte*)sSubmixId);
             context->VolumeOffset = ObsData.obs_data_get_double(settings, (sbyte*)sVolumeOffsetId);
+            context->VerboseLogging = ObsData.obs_data_get_bool(settings, (sbyte*)sVerboseLoggingId);
         }
 
         return context;
     }
 
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static unsafe void Destroy(void* data)
     {
         Log.Debug("Filter destroyed!");
@@ -82,83 +99,97 @@ public class GoXlrChannelSyncFilter
      * Gets called every frame.
      * Requests current volume from the GoXLR Utility and translates the volume to the OBS volume scale.
      */
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static unsafe void Tick(void* data, float seconds)
     {
-        var utility = UtilitySingleton.GetInstance();
-        var context = (FilterContext*)data;
-
-        var deviceSerial = Marshal.PtrToStringUTF8((IntPtr)context->DeviceSerial);
-        var channelName = Marshal.PtrToStringUTF8((IntPtr)context->ChannelName);
-        var submix = Marshal.PtrToStringUTF8((IntPtr)context->Submix);
-
-        var target = Obs.obs_filter_get_parent(context->Source);
-	    var systemVolume = 0;
-        if (submix == "B" && utility.Status["mixers"]?[deviceSerial ?? ""]?["levels"]!["submix"] != null) {
-            systemVolume = utility.Status["mixers"]?[deviceSerial ?? ""]?["levels"]?["submix"]?["inputs"]?[channelName ?? ""]?["volume"]?
-                .GetValue<int>() ?? 0;
-        } else {
-            systemVolume = utility.Status["mixers"]?[deviceSerial ?? ""]?["levels"]?["volumes"]?[channelName ?? ""]?
-                .GetValue<int>() ?? 0;
-        }
-
-        // Ok, the GoXLR seems to decrease the volume by 1dB for every (on average) 4.85 volume steps, it
-        // doesn't appear to be an exact science, but this should get us close enough to accurate for now.
-
-        float obsVolume;
-        if (systemVolume == 0)
+        try
         {
-            // Absolute silence in OBS (-inf dB)
-            obsVolume = 0.0f;
-        }
-        else
-        {
-	        // So, start simply, how many multiples of 4.85 are we below max (number of dB we need to decrease by)?
-	        var utilityBase = (255f - systemVolume) / 4.85f;
+            var utility = UtilitySingleton.GetInstance();
+            var context = (FilterContext*)data;
 
-	        // Below 140, the adjustment increases, so we need to accommodate for that here.
-	        if (systemVolume < 140)
-	        {
-	            var count = 140 - systemVolume;
-	            utilityBase += count * 0.115f;
-	        }
+            var filterSource = context->Source;
+            if (Obs.obs_source_enabled(filterSource) == 0) return;
+            var target = Obs.obs_filter_get_parent(filterSource);
+            if (target is null) return;
 
-	        utilityBase -= (float)context->VolumeOffset;
+            var deviceSerial = Marshal.PtrToStringUTF8((IntPtr)context->DeviceSerial);
+            var channelName = Marshal.PtrToStringUTF8((IntPtr)context->ChannelName);
+            var submix = Marshal.PtrToStringUTF8((IntPtr)context->Submix);
 
-	        // Now we convert this into an OBS value...
-	        obsVolume = (float)Math.Pow(10, -utilityBase / 20f);
-		}
+            if (string.IsNullOrEmpty(deviceSerial) || string.IsNullOrEmpty(channelName)) return;
 
-        // check if channel is muted
-        var isMuted = false;
-        var faderStatus = (JsonObject?)utility.Status["mixers"]?[deviceSerial ?? ""]?["fader_status"];
-        if (faderStatus != null)
-            foreach (var faderEntry in faderStatus)
+            int systemVolume;
+            if (submix == "B" && utility.Status["mixers"]?[deviceSerial]?["levels"]?["submix"] != null)
             {
-                if (faderEntry.Value?["channel"]?.GetValue<string>() != channelName) continue;
-
-                isMuted = faderEntry.Value?["mute_state"]?.GetValue<string>() == "MutedToAll" ||
-                          (faderEntry.Value?["mute_state"]?.GetValue<string>() == "MutedToX" &&
-                           (
-                               faderEntry.Value?["mute_type"]?.GetValue<string>() == "ToStream" ||
-                               faderEntry.Value?["mute_type"]?.GetValue<string>() == "All"
-                           ));
-                break;
+                systemVolume = utility.Status["mixers"]?[deviceSerial]?["levels"]?["submix"]?["inputs"]?[channelName]?["volume"]?.GetValue<int>() ?? 0;
+            }
+            else
+            {
+                systemVolume = utility.Status["mixers"]?[deviceSerial]?["levels"]?["volumes"]?[channelName]?.GetValue<int>() ?? 0;
             }
 
-        // only update channel if values changed
-        var oldMuteState = (byte)1 == Obs.obs_source_muted(target);
-        var oldVolume = Obs.obs_source_get_volume(target);
-        if (Math.Abs(oldVolume - obsVolume) > 0.0001 || isMuted != oldMuteState)
+            // Ok, the GoXLR seems to decrease the volume by 1dB for every (on average) 4.85 volume steps, it
+            // doesn't appear to be an exact science, but this should get us close enough to accurate for now.
+
+            float obsVolume;
+            if (systemVolume == 0)
+            {
+                // Absolute silence in OBS (-inf dB)
+                obsVolume = 0.0f;
+            }
+            else
+            {
+                // So, start simply, how many multiples of 4.85 are we below max (number of dB we need to decrease by)?
+                var utilityBase = (255f - systemVolume) / 4.85f;
+
+                // Below 140, the adjustment increases, so we need to accommodate for that here.
+                if (systemVolume < 140)
+                {
+                    var count = 140 - systemVolume;
+                    utilityBase += count * 0.115f;
+                }
+
+                utilityBase -= (float)context->VolumeOffset;
+
+                // Now we convert this into an OBS value...
+                obsVolume = (float)Math.Pow(10, -utilityBase / 20f);
+            }
+
+            // check if channel is muted
+            var isMuted = false;
+            var faderStatus = (JsonObject?)utility.Status["mixers"]?[deviceSerial]?["fader_status"];
+            if (faderStatus != null)
+                foreach (var faderEntry in faderStatus)
+                {
+                    if (faderEntry.Value?["channel"]?.GetValue<string>() != channelName) continue;
+
+                    isMuted = faderEntry.Value?["mute_state"]?.GetValue<string>() == "MutedToAll" ||
+                              (faderEntry.Value?["mute_state"]?.GetValue<string>() == "MutedToX" &&
+                               (
+                                   faderEntry.Value?["mute_type"]?.GetValue<string>() == "ToStream" ||
+                                   faderEntry.Value?["mute_type"]?.GetValue<string>() == "All"
+                               ));
+                    break;
+                }
+
+            // only update channel if values changed
+            var oldMuteState = 1 == Obs.obs_source_muted(target);
+            var oldVolume = Obs.obs_source_get_volume(target);
+            if (Math.Abs(oldVolume - obsVolume) > 0.0001 || isMuted != oldMuteState)
+            {
+                // Update OBS Volume
+                Obs.obs_source_set_volume(target, obsVolume);
+                Obs.obs_source_set_muted(target, isMuted ? (byte)1 : (byte)0);
+                if (context->VerboseLogging != 0) Log.Info($"Updated volume for channel '{channelName}' to {obsVolume} (muted: {isMuted})");
+            }
+        }
+        catch (Exception e)
         {
-            // Update OBS Volume
-            Obs.obs_source_set_volume(target, obsVolume);
-            Obs.obs_source_set_muted(target, isMuted ? (byte)1 : (byte)0);
-            Log.Info($"Updated volume for channel '{channelName}' to {obsVolume} (muted: {isMuted})");
+            Log.Error($"Tick exception: {e}");
         }
     }
 
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static unsafe void GetDefaults(obs_data* settings)
     {
         Log.Debug("Setting filter settings default!");
@@ -167,10 +198,14 @@ public class GoXlrChannelSyncFilter
         {
             ObsData.obs_data_set_default_string(settings, (sbyte*)sSubmixId, (sbyte*)sSubmixDefault);
         }
-        
+
+        fixed (byte* sVerboseLoggingId = "VERBOSE_LOGGING"u8.ToArray())
+        {
+            ObsData.obs_data_set_default_bool(settings, (sbyte*)sVerboseLoggingId, 0);
+        }
     }
 
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static unsafe obs_properties* GetProperties(void* data)
     {
         var properties = ObsProperties.obs_properties_create();
@@ -229,7 +264,10 @@ public class GoXlrChannelSyncFilter
             
             // volume offset
             sVolumeOffsetId = "VOLUME_OFFSET"u8.ToArray(),
-            sVolumeOffsetDescription = "Volume Offset (dB)"u8.ToArray()
+            sVolumeOffsetDescription = "Volume Offset (dB)"u8.ToArray(),
+            
+            sVerboseLoggingId = "VERBOSE_LOGGING"u8.ToArray(),
+            sVerboseLoggingDescription = "Verbose logging"u8.ToArray()
             )
         {
             // Create the Serial Dropdown...
@@ -320,6 +358,8 @@ public class GoXlrChannelSyncFilter
             
             // Add the Volume Offset Property
             ObsProperties.obs_properties_add_float(properties, (sbyte*)sVolumeOffsetId, (sbyte*)sVolumeOffsetDescription, -60, 60, 0.1);
+
+            ObsProperties.obs_properties_add_bool(properties, (sbyte*)sVerboseLoggingId, (sbyte*)sVerboseLoggingDescription);
         }
 
         return properties;
@@ -328,17 +368,23 @@ public class GoXlrChannelSyncFilter
     /**
      * Called when the user changes the settings for the filter
      */
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     public static unsafe void Update(void* data, obs_data* settings)
     {
         var context = (FilterContext*)data;
 
-        fixed (byte* sChannelNameId = "CHANNEL_NAME"u8.ToArray(), sDeviceSerialId = "DEVICE_SERIAL"u8.ToArray(), sSubmixId = "SUBMIX"u8.ToArray(), sVolumeOffsetId = "VOLUME_OFFSET"u8.ToArray())
+        fixed (byte* 
+               sChannelNameId = "CHANNEL_NAME"u8.ToArray(), 
+               sDeviceSerialId = "DEVICE_SERIAL"u8.ToArray(), 
+               sSubmixId = "SUBMIX"u8.ToArray(), 
+               sVolumeOffsetId = "VOLUME_OFFSET"u8.ToArray(), 
+               sVerboseLoggingId = "VERBOSE_LOGGING"u8.ToArray())
         {
             context->DeviceSerial = ObsData.obs_data_get_string(settings, (sbyte*)sDeviceSerialId);
             context->ChannelName = ObsData.obs_data_get_string(settings, (sbyte*)sChannelNameId);
             context->Submix = ObsData.obs_data_get_string(settings, (sbyte*)sSubmixId);
             context->VolumeOffset = ObsData.obs_data_get_double(settings, (sbyte*)sVolumeOffsetId);
+            context->VerboseLogging = ObsData.obs_data_get_bool(settings, (sbyte*)sVerboseLoggingId);
         }
     }
 
@@ -353,6 +399,8 @@ public class GoXlrChannelSyncFilter
         public sbyte* ChannelName;
         public sbyte* Submix;
         public double VolumeOffset;
+
+        public byte VerboseLogging;
     }
 #pragma warning restore CS0649 // Field is never assigned to, and will always have its default value
 }
