@@ -1,5 +1,11 @@
-name: Create Release Draft
-on: workflow_dispatch
+name: Publish Beta Release
+on:
+  workflow_dispatch:
+  push:
+    branches: [beta]
+    paths:
+      - .github/workflows/create-release-draft.yml
+      - FaderSyncPlugin/FaderSyncPlugin.csproj
 
 permissions:
   contents: read
@@ -12,7 +18,7 @@ jobs:
     if: github.ref == 'refs/heads/beta'
     uses: ./.github/workflows/publish-solution.yml
 
-  create_release_draft:
+  release:
     needs: [ publish ]
     permissions:
       contents: write
@@ -32,7 +38,7 @@ jobs:
           ./scripts/verify-packages.ps1 -WindowsDirectory artifacts/windows-artifacts `
             -LinuxDirectory artifacts/linux-artifacts -Manifest artifacts/SHA256SUMS.txt
 
-      - name: Create Prerelease Draft
+      - name: Verify and Publish Prerelease
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.publish.outputs.version }}
@@ -72,8 +78,13 @@ jobs:
           uploaded=$(jq -r '.assets[] | select(.state == "uploaded") | "\(.digest)  \(.name)"' <<< "$draft" | sort)
           diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$uploaded")
 
-          gh api --method POST "$api/git/refs" --silent \
-            -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA"
+          tag_ref=$(git ls-remote --tags origin "refs/tags/$tag")
+          if [[ -z "$tag_ref" ]]; then
+            gh api --method POST "$api/git/refs" --silent \
+              -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA"
+          fi
           tag_sha=$(gh api "$api/git/ref/tags/$tag" --jq '.object.sha')
           test "$tag_sha" = "$GITHUB_SHA"
-          printf 'Verified all six release assets and tag `%s` at `%s`.\n' "$tag" "$tag_sha" >> "$GITHUB_STEP_SUMMARY"
+          gh release edit "$tag" --draft=false --prerelease --latest=false --verify-tag
+          gh api "$api/releases/$release_id" | jq -e '(.draft | not) and .prerelease'
+          printf 'Published `%s` at `%s` with all six verified assets.\n' "$tag" "$tag_sha" >> "$GITHUB_STEP_SUMMARY"
