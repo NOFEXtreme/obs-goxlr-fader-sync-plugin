@@ -4,6 +4,7 @@ on:
   push:
     branches: [beta]
     paths:
+      - .gitattributes
       - .github/workflows/create-release-draft.yml
       - FaderSyncPlugin/FaderSyncPlugin.csproj
 
