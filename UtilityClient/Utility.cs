@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using GoXLRUtilityClient.Native;
 using Json.Patch;
 
@@ -7,142 +8,100 @@ namespace GoXLRUtilityClient;
 
 public class Utility : WebsocketClient
 {
-    private uint _operationIncrement = 1;
-    private event EventHandler<MessageData>? OnMessageReceived; 
-    public event EventHandler<Exception>? OnException; 
-    
-    public JsonNode Status;
+    private const ulong StatusRequestId = 1;
+    private static readonly TimeSpan ConnectionTimeout = TimeSpan.FromSeconds(5);
+    private JsonObject? _status;
 
-    public Utility()
+    public JsonObject? Status => Volatile.Read(ref _status);
+
+    public async Task ConnectAsync(CancellationToken cancellationToken = default)
     {
-        this.Status = JsonNode.Parse("{}")!;
-        
-        // basic message handler
-        OnMessage += (_, message) =>
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(ConnectionTimeout);
+
+        var pipeName = OperatingSystem.IsWindows() ? "@goxlr.socket" : "/tmp/goxlr.socket";
+        string response;
+        using (var socketClient = new SocketClient(pipeName))
         {
-            try
-            {
-                var jsonNode = JsonNode.Parse(message);
+            await socketClient.ConnectAsync(timeout.Token).ConfigureAwait(false);
+            await socketClient.SendMessageAsync("\"GetStatus\"", timeout.Token).ConfigureAwait(false);
+            response = await socketClient.ReadMessageAsync(timeout.Token).ConfigureAwait(false);
+        }
 
-                // test if message is valid
-                if (jsonNode!["id"] == null || jsonNode["data"] == null) return;
+        var httpSettings = JsonNode.Parse(response)?["Status"]?["config"]?["http_settings"];
+        var host = httpSettings?["bind_address"]?.GetValue<string>();
+        var port = httpSettings?["port"]?.GetValue<int>();
+        if (string.IsNullOrEmpty(host) || port is not (> 0 and <= 65535))
+            throw new InvalidDataException("GoXLR Utility did not report a valid websocket address.");
 
-                var isPatchMessage = jsonNode["data"]!["Patch"] != null;
-                var id = jsonNode["id"]!.GetValue<ulong>();
-                var data = jsonNode["data"]!;
-
-                this.OnMessageReceived?.Invoke(this, new MessageData(id, data, isPatchMessage));
-
-                // handle patch messages
-                if (isPatchMessage)
-                {
-                    var patchString = data["Patch"]!.ToJsonString();
-                    var patch = JsonSerializer.Deserialize<JsonPatch>(patchString); // FIXME: can break functionality when AOT compiling
-                    var resultResult = patch?.Apply(this.Status);
-                    this.Status = resultResult!.Result!;
-                }
-            }
-            catch (Exception je)
-            {
-                OnException?.Invoke(this, je);
-            } // nothing
-        };
-
-        OnDisconnected += (_, message) => {
-            Console.WriteLine("Disconnected from Host: {0}", message);
-
-            // Reset the status, so Upstream code knows we're not connected.
-            this.Status = JsonNode.Parse("{}")!;
-        };
+        var address = host switch { "0.0.0.0" => "127.0.0.1", "::" => "::1", _ => host };
+        var uri = new UriBuilder("ws", address, port.Value, "/api/websocket").Uri;
+        await GetStatusAsync(uri, timeout.Token).ConfigureAwait(false);
     }
 
-    private async Task<JsonNode?> AwaitResponse(uint operationId)
-    {
-        using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        var responseSource = new TaskCompletionSource<JsonNode>();
+    public Task ConnectAsync(string uri) => ConnectAsync(new Uri(uri));
 
-        this.OnMessageReceived += TempMessageHandler;
-        void TempMessageHandler(object? _, MessageData message)
+    public async Task ConnectAsync(Uri uri, CancellationToken cancellationToken = default)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(ConnectionTimeout);
+        await GetStatusAsync(uri, timeout.Token).ConfigureAwait(false);
+    }
+
+    private async Task GetStatusAsync(Uri uri, CancellationToken cancellationToken)
+    {
+        await OpenAsync(uri, cancellationToken).ConfigureAwait(false);
+        await SendMessageAsync($$"""{"id":{{StatusRequestId}},"data":"GetStatus"}""", cancellationToken).ConfigureAwait(false);
+
+        while (await ReceiveMessageAsync(cancellationToken).ConfigureAwait(false) is { } message)
         {
-            if (message.Id == operationId)
-            {
-                responseSource.SetResult(message.Data);
-            }
+            var data = ReadData(message, out var id);
+            if (id != StatusRequestId) continue;
+
+            if (data["Status"] is not JsonObject status || status["mixers"] is not JsonObject)
+                throw new InvalidDataException("GoXLR Utility returned an invalid status snapshot.");
+
+            Volatile.Write(ref _status, status);
+            return;
         }
 
+        throw new EndOfStreamException("GoXLR Utility disconnected before sending its status.");
+    }
+
+    public async Task ReceiveUpdatesAsync(CancellationToken cancellationToken)
+    {
         try
         {
-            var responseTask = responseSource.Task;
-            var completedTask = await Task.WhenAny(responseTask, Task.Delay(-1, timeoutSource.Token));
+            while (await ReceiveMessageAsync(cancellationToken).ConfigureAwait(false) is { } message)
+            {
+                var data = ReadData(message, out _);
+                if (!data.TryGetPropertyValue("Patch", out var changes)) continue;
+                if (changes is not JsonArray) throw new JsonException("GoXLR Utility returned an invalid patch.");
 
-            if (completedTask == responseTask)
-                return await responseTask;
+                var patch = changes.Deserialize(UtilityJsonContext.Default.JsonPatch)!;
+                var result = patch.Apply(Status);
+                // Patch.Apply creates a copy, so readers can finish using the published snapshot.
+                if (!result.IsSuccess || result.Result is not JsonObject status || status["mixers"] is not JsonObject)
+                    throw new InvalidDataException("GoXLR Utility patch could not be applied to the current status.");
 
-            return null;
-        }
-        catch
-        {
-            return null;
+                Volatile.Write(ref _status, status);
+            }
         }
         finally
         {
-            this.OnMessageReceived -= TempMessageHandler;
+            Volatile.Write(ref _status, null);
         }
     }
 
-    public async Task ConnectAsync()
+    private static JsonObject ReadData(string message, out ulong id)
     {
-        String pipeName = OperatingSystem.IsWindows() ? "@goxlr.socket" : "/tmp/goxlr.socket";
-        SocketClient socketClient = new SocketClient(pipeName);
-        socketClient.Connect();
-        
-        // try getting the websocket url
-        socketClient.SendMessage("\"GetStatus\"");
-        string response = socketClient.ReadMessage();
-        
-        // close socket client connection
-        socketClient.Dispose();
-        
-        // try parsing the response
-        JsonNode? status = JsonNode.Parse(response);
-        if (status == null) throw new JsonException("Failed to parse status response.");
-        
-        // find socket address
-        string host = status["Status"]?["config"]?["http_settings"]?["bind_address"]?.GetValue<string>() ?? "";
-        Int32 port = status["Status"]?["config"]?["http_settings"]?["port"]?.GetValue<Int32>() ?? 0;
-        await this.ConnectAsync($"ws://{(host == "0.0.0.0" ? "127.0.0.1" : host)}:{port}/api/websocket");
-    }
+        if (JsonNode.Parse(message) is not JsonObject root || root["id"] is not JsonValue idValue ||
+            !idValue.TryGetValue(out id) || root["data"] is not JsonObject data)
+            throw new JsonException("GoXLR Utility returned an invalid websocket message.");
 
-    public new async Task ConnectAsync(string uri)
-    {
-        await this.ConnectAsync(new Uri(uri));
-    }
-    
-    public new async Task ConnectAsync(Uri uri)
-    {
-        await base.ConnectAsync(uri);
-
-        var requestId = this.GetNewId();
-        
-        // request status
-        var statusRequest = JsonNode.Parse("{}");
-        statusRequest!["id"] = requestId;
-        statusRequest["data"] = "GetStatus";
-        await SendMessage(statusRequest.ToJsonString());
-
-        var result = await this.AwaitResponse(requestId);
-        if (result != null) this.Status = result["Status"]!;
-        else throw new InvalidDataException("Server failed to respond with current status.");
-        
-        Console.WriteLine($"Connected to GoXLR Utility v{result["Status"]?["config"]?["daemon_version"]}");
-    }
-
-    private uint GetNewId() => Interlocked.Increment(ref this._operationIncrement);
-    
-    private class MessageData(ulong id, JsonNode node, bool isPatch)
-    {
-        public readonly ulong Id = id;
-        public readonly JsonNode Data = node;
-        public readonly bool IsPatch = isPatch;
+        return data;
     }
 }
+
+[JsonSerializable(typeof(JsonPatch))]
+internal partial class UtilityJsonContext : JsonSerializerContext;

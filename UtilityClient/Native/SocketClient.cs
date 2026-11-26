@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.IO.Pipes;
 using System.Text;
 
@@ -5,65 +6,49 @@ namespace GoXLRUtilityClient.Native;
 
 public class SocketClient : IDisposable
 {
-    private readonly BinaryReader _reader;
-    private readonly BinaryWriter _writer;
+    // GoXLR Utility uses the default limit of the length-delimited codec.
+    internal const int MaxMessageLength = 8 * 1024 * 1024;
     private readonly NamedPipeClientStream _client;
 
-    public bool IsConnected => this._client.IsConnected;
-    public void Connect() => _client.Connect();
-    
-    /**
-     * Sends and understands messages using sockets and NamedPipes in the following format:
-     * [Message Length as unsigned 32bit BigEndian Integer][Text]
-     */
+    public bool IsConnected => _client.IsConnected;
+
     public SocketClient(string socketName)
     {
-        this._client = new NamedPipeClientStream(socketName);
-        this._reader = new BinaryReader(this._client);
-        this._writer = new BinaryWriter(this._client);
+        _client = new NamedPipeClientStream(".", socketName, PipeDirection.InOut, PipeOptions.Asynchronous);
     }
 
-    public void SendMessage(string message)
+    public void Connect() => _client.Connect(5000);
+
+    public Task ConnectAsync(CancellationToken cancellationToken) => _client.ConnectAsync(cancellationToken);
+
+    public void SendMessage(string message) => SendMessageAsync(message, CancellationToken.None).GetAwaiter().GetResult();
+
+    public async Task SendMessageAsync(string message, CancellationToken cancellationToken)
     {
         var messageBytes = Encoding.UTF8.GetBytes(message);
-        var lengthBytes = BitConverter.GetBytes(messageBytes.Length);
-        
-        // convert to big endian system
-        if (BitConverter.IsLittleEndian) Array.Reverse(lengthBytes);
+        var length = new byte[sizeof(uint)];
+        BinaryPrimitives.WriteUInt32BigEndian(length, (uint)messageBytes.Length);
 
-        _writer.Write(lengthBytes);
-        _writer.Write(messageBytes);
-        _writer.Flush();
+        await _client.WriteAsync(length, cancellationToken).ConfigureAwait(false);
+        await _client.WriteAsync(messageBytes, cancellationToken).ConfigureAwait(false);
+        await _client.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public string ReadMessage()
-    {
-        // read message length
-        byte[] lengthBytes;
-        try { lengthBytes = _reader.ReadBytes(4); }
-        catch (IOException) { return ""; }
-        
-        if (BitConverter.IsLittleEndian) Array.Reverse(lengthBytes);
-        var messageLength = BitConverter.ToUInt32(lengthBytes);
-        
-        // read message
-        byte[] messageBytes;
-        try { messageBytes = _reader.ReadBytes((int)messageLength); }
-        catch (IOException) { return ""; }
+    public string ReadMessage() => ReadMessageAsync(CancellationToken.None).GetAwaiter().GetResult();
 
+    public Task<string> ReadMessageAsync(CancellationToken cancellationToken) => ReadMessageAsync(_client, cancellationToken);
+
+    internal static async Task<string> ReadMessageAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        var lengthBytes = new byte[sizeof(uint)];
+        await stream.ReadExactlyAsync(lengthBytes, cancellationToken).ConfigureAwait(false);
+        var length = BinaryPrimitives.ReadUInt32BigEndian(lengthBytes);
+        if (length > MaxMessageLength) throw new InvalidDataException("GoXLR Utility IPC message is too large.");
+
+        var messageBytes = new byte[(int)length];
+        await stream.ReadExactlyAsync(messageBytes, cancellationToken).ConfigureAwait(false);
         return Encoding.UTF8.GetString(messageBytes);
     }
-    
-    public void Dispose()
-    {
-        if (_client.IsConnected)
-        {
-            _reader.Close();
-            _writer.Close();
-            _client.Dispose();
-        }
-        
-        _reader.Dispose();
-        _writer.Dispose();
-    }
+
+    public void Dispose() => _client.Dispose();
 }

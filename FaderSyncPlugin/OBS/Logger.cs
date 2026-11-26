@@ -18,7 +18,7 @@ public class Logger
     
     private static unsafe void Log(LogLevel level, string text)
     {
-        fixed (byte* logMessagePtr = Encoding.UTF8.GetBytes($"[{_moduleName}] {text.Replace("%", "%%")}"))
+        fixed (byte* logMessagePtr = Encoding.UTF8.GetBytes($"[{_moduleName}] {text.Replace("%", "%%")}\0"))
             ObsBase.blog((int)level, (sbyte*)logMessagePtr);
     }
 

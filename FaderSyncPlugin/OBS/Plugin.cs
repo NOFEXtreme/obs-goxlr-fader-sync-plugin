@@ -27,16 +27,24 @@ namespace FaderSync.OBS
         [UnmanagedCallersOnly(EntryPoint = "obs_module_load", CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
         public static bool obs_module_load()
         {
-            Log.Info($"Loading {Module.Name} v{Module.Version}");
-            
-            Log.Info("Preparing Utility Client...");
-            _ = UtilitySingleton.GetInstance();
-            
-            Log.Info("Loading filters...");
-            GoXlrChannelSyncFilter.Register(Module.Name);
-            
-            Log.Info("Preloading complete.");
-            return true;
+            try
+            {
+                Log.Info($"Loading {Module.Name} v{Module.Version}");
+
+                Log.Info("Loading filters...");
+                GoXlrChannelSyncFilter.Register(Module.Name);
+
+                Log.Info("Preparing Utility Client...");
+                UtilitySingleton.Start();
+
+                Log.Info("Preloading complete.");
+                return true;
+            }
+            catch (Exception exception)
+            {
+                Log.Error($"Plugin load failed: {exception.Message}");
+                return false;
+            }
         }
 
         [UnmanagedCallersOnly(EntryPoint = "obs_module_post_load", CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
@@ -49,8 +57,18 @@ namespace FaderSync.OBS
         public static void obs_module_unload()
         {
             Log.Info("Plugin unloading...");
-            GoXlrChannelSyncFilter.Cleanup();
-            UtilitySingleton.GetInstance().Dispose();
+            try
+            {
+                UtilitySingleton.Shutdown();
+            }
+            catch (Exception exception)
+            {
+                Log.Error($"Plugin shutdown failed: {exception.Message}");
+            }
+            finally
+            {
+                GoXlrChannelSyncFilter.Cleanup();
+            }
         }
 
         [UnmanagedCallersOnly(EntryPoint = "obs_module_set_locale", CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
