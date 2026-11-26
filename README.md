@@ -16,44 +16,45 @@ or create a [new Issue](https://github.com/parzival-space/obs-goxlr-fader-sync-p
 > Thank you all for using my plugin.
 
 ## Requirements
-* [OBS Studio](https://obsproject.com/) v30.0+
+* [OBS Studio](https://obsproject.com/) v32.0 or a newer version with a compatible plugin API
 * [GoXLR Utility](https://github.com/GoXLR-on-Linux/goxlr-utility) v1.0.0+
 
-Note: While the plugin may work with some older versions of OBS Studio and GoXLR Utility, 
-it was tested and developed with the above versions in mind.
+Note: The plugin reports the OBS API version it was built against.
 
 ### Additional Requirements for Development
 If you plan on contributing to this project, you will also need a working [.Net SDK](https://dotnet.microsoft.com/en-us/download/dotnet/9.0) 9.0+ installation as well as all
 other .NET Native AOT requirements. 
 You can find a detailed list and installation instructions [here](https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/?tabs=net8plus%2Cwindows#prerequisites).
 
-The repository contains a build script for Windows and Linux in the scripts directory that will automatically build the 
-project and install the plugin into your OBS directory.
+The build scripts in the scripts directory create the release packages. Windows also requires [Inno Setup 7](https://jrsoftware.org/isdl.php). Use `-Install` on Windows or `--install` on Linux to install a local build.
 
 ## Installation
 
 Detailed Installation Instructions can be found in the [Wiki Pages](https://github.com/parzival-space/obs-goxlr-fader-sync-plugin/wiki/Installation).
 
-Pre-Build Binaries for Windows and Linux are available in the Releases section. 
-Once downloaded, place the ``FaderSyncPlugin`` in the .zip-File into the appropriate plugin directory:
+Pre-built binaries are available in the Releases section.
 
-<b>Windows</b>
-```
-C:\ProgramData\obs-studio\plugins\
-```
+| File | Installation |
+| --- | --- |
+| `FaderSyncPlugin-win-x64-installer.exe` | The setup wizard detects OBS Studio and selects the matching layout. It backs up the plugin before replacing previous copies. Use Windows Installed apps to uninstall. |
+| `FaderSyncPlugin-win-x64.zip` | OBS 33+. Extract to `%ProgramData%\obs-studio\plugins`. |
+| `FaderSyncPlugin-win-x64-obs32.zip` | OBS 32. Extract to `%ProgramData%\obs-studio\plugins`. |
+| `FaderSyncPlugin-win-x64-portable.zip` | Portable legacy layout. Extract to the OBS installation root. For the new OBS 33+ Portable layout, use the installer. |
+| `FaderSyncPlugin-linux-x64.zip` | Extract to `~/.config/obs-studio/plugins`. |
 
-<b>Linux</b>
-```
-~/.config/obs-studio/plugins
-```
+Close OBS before installing. When upgrading manually, remove previous copies of this plugin from the installation's other plugin locations.
+[OBS plugin paths](https://obsproject.com/kb/legacy-plugin-developer-info)
 
 ## Usage-Guide
 Please refer to the [Wiki Pages](https://github.com/parzival-space/obs-goxlr-fader-sync-plugin/wiki/Usage-Guide).
 
+The same measured gain curve is used for all GoXLR models and channels. Hardware measurements covered Game, Music, System, Sample and Chat on GoXLR Full firmware 1.5.1.901.
+OBS keeps its current volume and mute state while GoXLR status is unavailable.
+Chat may apply additional dynamic processing, so the result depends on the audio capture path. Capture the OBS source before the GoXLR fader so its gain is applied once.
+
 ## Contributing
 Contributions to this project are welcome. 
-To simplify building the project, there are two build scripts in the repository that create the 
-binary file and automatically install them into your OBS.
+Use the build scripts above to build and install the plugin for local testing.
 
 To contribute, follow these steps:
 1. [Fork](https://github.com/parzival-space/obs-goxlr-fader-sync-plugin/fork) this repository.
