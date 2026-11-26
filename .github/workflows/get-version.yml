@@ -6,6 +6,10 @@ on:
         description: "The FaderSyncPlugin Version Number"
         value: ${{ jobs.get_version.outputs.version }}
 
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+
 jobs:
   get_version:
     name: "Get Version"

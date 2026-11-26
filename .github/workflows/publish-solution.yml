@@ -7,14 +7,22 @@ on:
         description: "FaderSyncPlugin Version Number"
         value: ${{ jobs.get_version.outputs.version }}
 
+permissions:
+  contents: read
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+
 jobs:
   get_version:
     uses: ./.github/workflows/get-version.yml
 
   publish_windows:
     name: Create Windows Artifacts
-    needs: [ get_version ]
     runs-on: windows-latest
+    env:
+      PACKAGE_DIR: FaderSyncPlugin/bin/Release/net9.0/win-x64/package
 
     steps:
       - name: Checkout Repository
@@ -25,40 +33,42 @@ jobs:
         with:
           dotnet-version: 9.0.x
 
-      - name: Build
+      - name: Install Inno Setup
+        shell: pwsh
         run: |
-          dotnet publish -c Release -r win-x64 --self-contained `
-            -p:Version="${{ needs.get_version.outputs.version }}" `
-            -p:FileVersion="${{ needs.get_version.outputs.version }}" `
-            -p:InformationalVersion="${{ needs.get_version.outputs.version }}"
+          $setup = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
+          $target = Join-Path $env:RUNNER_TEMP 'Inno Setup 7'
+          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe' -OutFile $setup
+          if ((Get-FileHash $setup).Hash -ne '8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0') {
+              throw 'Inno Setup download checksum mismatch.'
+          }
+          $process = Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$target`"" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Inno Setup installation failed.' }
+          "ISCC=$target\ISCC.exe" >> $env:GITHUB_ENV
 
-      - name: Package to zip (Windows)
-        run: |
-          $pub = "FaderSyncPlugin/bin/Release/net9.0/win-x64/publish"
-          $zip = "dist/FaderSyncPlugin-win-x64-${{ needs.get_version.outputs.version }}.zip"
+      - name: Test Utility Client
+        run: dotnet test UtilityClient.Test/UtilityClient.Test.csproj -c Release
 
-          Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
-
-          New-Item -ItemType Directory -Force "dist/obs-plugins/64bit" | Out-Null
-          New-Item -ItemType Directory -Force "dist/data/obs-plugins/FaderSyncPlugin/locale" | Out-Null
-
-          Copy-Item "$pub/*.dll" "dist/obs-plugins/64bit/" -Force
-          # Copy-Item "$pub/locale/*" "dist/data/obs-plugins/FaderSyncPlugin/locale/" -Force
-
-          Compress-Archive -Path "dist/obs-plugins","dist/data" -DestinationPath $zip
+      - name: Build and Verify Packages
+        run: ./scripts/build-windows.ps1 -InnoCompiler $env:ISCC
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v7
         with:
           name: windows-artifacts
-          path: dist/*.zip
+          path: |
+            ${{ env.PACKAGE_DIR }}/FaderSyncPlugin-win-x64.zip
+            ${{ env.PACKAGE_DIR }}/FaderSyncPlugin-win-x64-obs32.zip
+            ${{ env.PACKAGE_DIR }}/FaderSyncPlugin-win-x64-portable.zip
+            ${{ env.PACKAGE_DIR }}/FaderSyncPlugin-win-x64-installer.exe
           compression-level: 0
           if-no-files-found: error
 
   publish_linux:
     name: Create Linux Artifacts
-    needs: [ get_version ]
     runs-on: ubuntu-24.04
+    env:
+      PLUGIN_OUTPUT: FaderSyncPlugin/bin/Release/net9.0/linux-x64
 
     steps:
       - name: Checkout Repository
@@ -67,37 +77,27 @@ jobs:
       - name: Setup AOT Dependencies
         run: |
           sudo apt update
-          sudo apt install clang zlib1g-dev zip -y
+          sudo apt install clang zlib1g-dev -y
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 9.0.x
 
+      - name: Test Utility Client
+        run: dotnet test UtilityClient.Test/UtilityClient.Test.csproj -c Release
+
       - name: Build
-        run: |
-          dotnet publish -c Release -r linux-x64 --self-contained \
-            -p:Version="${{ needs.get_version.outputs.version }}" \
-            -p:FileVersion="${{ needs.get_version.outputs.version }}" \
-            -p:InformationalVersion="${{ needs.get_version.outputs.version }}"
+        run: bash ./scripts/build-linux.sh
 
-      - name: Package to zip (Linux)
-        run: |
-          pub="FaderSyncPlugin/bin/Release/net9.0/linux-x64/publish"
-          zip="dist/FaderSyncPlugin-linux-x64-${{ needs.get_version.outputs.version }}.zip"
-
-          rm -rf dist
-          mkdir -p dist/obs-plugins/64bit dist/data/obs-plugins/FaderSyncPlugin/locale
-
-          cp "$pub"/*.so dist/obs-plugins/64bit/
-          # cp "$pub"/locale/* dist/data/obs-plugins/FaderSyncPlugin/locale/
-
-          (cd dist && zip -r "../$zip" obs-plugins data)
+      - name: Verify Package
+        shell: pwsh
+        run: ./scripts/verify-packages.ps1 -LinuxDirectory "$env:PLUGIN_OUTPUT/package" -LinuxBinary "$env:PLUGIN_OUTPUT/publish/FaderSyncPlugin.so"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v7
         with:
           name: linux-artifacts
-          path: dist/*.zip
+          path: ${{ env.PLUGIN_OUTPUT }}/package/FaderSyncPlugin-linux-x64.zip
           compression-level: 0
           if-no-files-found: error

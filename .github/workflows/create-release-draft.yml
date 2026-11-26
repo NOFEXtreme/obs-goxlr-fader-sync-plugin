@@ -1,8 +1,15 @@
 name: Create Release Draft
 on: workflow_dispatch
 
+permissions:
+  contents: read
+
+concurrency:
+  group: release-draft-${{ github.ref }}
+
 jobs:
   publish:
+    if: github.ref == 'refs/heads/beta'
     uses: ./.github/workflows/publish-solution.yml
 
   create_release_draft:
@@ -11,22 +18,62 @@ jobs:
       contents: write
     runs-on: ubuntu-24.04
     steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
       - name: Download artifacts
         uses: actions/download-artifact@v7
         with:
           path: artifacts
 
-      - name: Print Artifacts (Debug only)
-        if: runner.debug == '1'
-        run: tree artifacts
+      - name: Verify Release Packages
+        shell: pwsh
+        run: |
+          ./scripts/verify-packages.ps1 -WindowsDirectory artifacts/windows-artifacts `
+            -LinuxDirectory artifacts/linux-artifacts -Manifest artifacts/SHA256SUMS.txt
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: "Release ${{ needs.publish.outputs.version }}"
-          tag_name: "v${{ needs.publish.outputs.version }}"
-          body: "TODO: Write changelog"
-          draft: true
-          prerelease: true
-          fail_on_unmatched_files: true
-          files: artifacts/*/*.zip
+      - name: Create Prerelease Draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            echo "Expected a beta version, got '$VERSION'." >&2
+            exit 1
+          fi
+          tag="v$VERSION"
+          api="repos/$GITHUB_REPOSITORY"
+          find_release() {
+            gh api --paginate "$api/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$tag\") | .id"
+          }
+          tag_ref=$(git ls-remote --tags origin "refs/tags/$tag")
+          release_id=$(find_release)
+          if [[ -n "$tag_ref$release_id" ]]; then
+            echo "A tag or release already exists for $tag." >&2
+            exit 1
+          fi
+          files=(
+            artifacts/windows-artifacts/FaderSyncPlugin-win-x64-installer.exe
+            artifacts/windows-artifacts/FaderSyncPlugin-win-x64.zip
+            artifacts/windows-artifacts/FaderSyncPlugin-win-x64-obs32.zip
+            artifacts/windows-artifacts/FaderSyncPlugin-win-x64-portable.zip
+            artifacts/linux-artifacts/FaderSyncPlugin-linux-x64.zip
+            artifacts/SHA256SUMS.txt
+          )
+          gh release create "$tag" "${files[@]}" --draft --prerelease \
+            --target "$GITHUB_SHA" --title "Release $VERSION" --generate-notes
+
+          release_id=$(find_release)
+          draft=$(gh api "$api/releases/$release_id")
+          jq -e --arg tag "$tag" --arg commit "$GITHUB_SHA" \
+            '.draft and .prerelease and .tag_name == $tag and .target_commitish == $commit' <<< "$draft"
+          expected=$(sha256sum -- "${files[@]}" | awk '{sub(/^.*\//, "", $2); print "sha256:" $1 "  " $2}' | sort)
+          uploaded=$(jq -r '.assets[] | select(.state == "uploaded") | "\(.digest)  \(.name)"' <<< "$draft" | sort)
+          diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$uploaded")
+
+          gh api --method POST "$api/git/refs" --silent \
+            -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA"
+          tag_sha=$(gh api "$api/git/ref/tags/$tag" --jq '.object.sha')
+          test "$tag_sha" = "$GITHUB_SHA"
+          printf 'Verified all six release assets and tag `%s` at `%s`.\n' "$tag" "$tag_sha" >> "$GITHUB_STEP_SUMMARY"
