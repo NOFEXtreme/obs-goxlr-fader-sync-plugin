@@ -7,7 +7,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$licenseHash = (Get-FileHash (Join-Path (Split-Path -Parent $PSScriptRoot) 'LICENSE')).Hash
+$root = Split-Path -Parent $PSScriptRoot
+$licenseText = (Get-Content -Raw (Join-Path $root 'LICENSE')) + "`n`n" +
+    (Get-Content -Raw (Join-Path $root 'THIRD-PARTY-NOTICES.txt'))
 $files = [ordered]@{}
 
 function Get-EntryHash($Entry) {
@@ -26,7 +28,11 @@ function Test-Package($Directory, $Name, $Module, $License, $Data, $ExpectedHash
         if ($names.Count -ne $expected.Count -or (Compare-Object $expected $names -CaseSensitive)) {
             throw "Unexpected contents in $Name."
         }
-        if ((Get-EntryHash $archive.GetEntry($License)) -ne $licenseHash) { throw "Incorrect license in $Name." }
+        $reader = [IO.StreamReader]::new($archive.GetEntry($License).Open())
+        try {
+            if ($reader.ReadToEnd().Replace("`r`n", "`n") -cne $licenseText) { throw "Incorrect license in $Name." }
+        }
+        finally { $reader.Dispose() }
         $moduleEntry = $archive.GetEntry($Module)
         if ($moduleEntry.Length -eq 0) { throw "Empty module in $Name." }
         $moduleHash = Get-EntryHash $moduleEntry

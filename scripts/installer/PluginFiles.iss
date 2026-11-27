@@ -138,13 +138,16 @@ function IsPluginLicense(Path: string): Boolean;
 var
   Bytes: AnsiString;
   Text: string;
+  Notices: Integer;
 begin
-  { Match the packaged MIT license, allowing old Windows CRLF copies. }
+  { The original license identifies both legacy and bundled copies. }
   Result := False;
   if not LoadStringFromFile(Path, Bytes) then Exit;
   Text := Bytes;
   StringChangeEx(Text, #13#10, #10, True);
-  Result := CompareText(GetSHA256OfString(Text), LicenseHash) = 0;
+  Notices := Pos(#10#10 + 'Third-party notices for GoXLR Fader Sync Plugin' + #10, Text);
+  if Notices > 0 then Text := Copy(Text, 1, Notices - 1);
+  Result := CompareText(GetSHA256OfString(Text), OriginalLicenseHash) = 0;
 end;
 
 function IsPluginDll(Path: string): Boolean;
@@ -372,11 +375,11 @@ begin
     Path := Files[I].Path;
     if Files[I].PayloadHash <> '' then
       ReplaceFile(AddBackslash(ExpandConstant('{tmp}')) + ExtractFileName(Path), Path, Files[I].PayloadHash)
-    else begin
-      if not DeleteFile(Path) then RaiseException('Could not remove the old plugin file: ' + Path);
-      Log('Removed old plugin file ' + Path);
-    end;
+    else if not DeleteFile(Path) then
+      RaiseException('Could not remove the old plugin file: ' + Path);
     Files[I].Changed := True;
+    if Files[I].PayloadHash <> '' then Log('Installed plugin file ' + Path)
+    else Log('Removed old plugin file ' + Path);
   end;
 end;
 

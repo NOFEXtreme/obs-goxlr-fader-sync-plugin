@@ -7,11 +7,14 @@
 #ifndef PluginBinary
   #error Pass the path to the built Windows DLL.
 #endif
+#ifndef LicensePath
+  #error Pass the path to the packaged LICENSE.
+#endif
 
 #define PluginName "GoXLR Fader Sync Plugin"
 #define DllName "FaderSyncPlugin.dll"
 #define Url "https://github.com/NOFEXtreme/obs-goxlr-fader-sync-plugin"
-#define LicensePath SourcePath + "..\..\LICENSE"
+#define OriginalLicensePath SourcePath + "..\..\LICENSE"
 
 [Setup]
 AppName={#PluginName}
@@ -55,7 +58,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 Source: "{#PluginBinary}"; Flags: dontcopy
-Source: "..\..\LICENSE"; Flags: dontcopy
+Source: "{#LicensePath}"; Flags: dontcopy
 
 [Dirs]
 Name: "{code:DataDir}"
@@ -74,6 +77,7 @@ const
   ModuleName = 'FaderSyncPlugin';
   ModuleFile = '{#DllName}';
   LicenseHash = '{#GetSHA256OfFile(LicensePath)}';
+  OriginalLicenseHash = '{#GetSHA256OfFile(OriginalLicensePath)}';
   InstallsKey = 'SOFTWARE\FaderSyncPlugin\Installations';
   UninstallKey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\';
   UnknownMode = 0;

@@ -27,6 +27,8 @@
             Condition="'$(PublishAot)' == 'true' and ('$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'linux-x64')">
         <PropertyGroup>
             <PackageDir>$([System.IO.Path]::GetFullPath('$(PublishDir)/../package', '$(MSBuildProjectDirectory)'))</PackageDir>
+            <OriginalLicense>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../LICENSE'))</OriginalLicense>
+            <ThirdPartyNotices>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../THIRD-PARTY-NOTICES.txt'))</ThirdPartyNotices>
         </PropertyGroup>
         <ItemGroup>
             <Layout Include="FaderSyncPlugin-win-x64" Condition="'$(RuntimeIdentifier)' == 'win-x64'">
@@ -50,9 +52,11 @@
                 <License>FaderSyncPlugin</License>
             </Layout>
         </ItemGroup>
+        <WriteLinesToFile File="$(PublishDir)/LICENSE" Overwrite="true"
+                          Lines="$([MSBuild]::Escape('$(OriginalLicense)&#xA;&#xA;$(ThirdPartyNotices)'))" />
         <RemoveDir Directories="@(Layout->'$(PackageDir)/%(Identity)')" />
         <MakeDir Directories="$(PackageDir)/%(Layout.Identity)/%(Layout.Bin);$(PackageDir)/%(Layout.Identity)/%(Layout.Data)" />
-        <Copy SourceFiles="$(MSBuildThisFileDirectory)../LICENSE" DestinationFolder="$(PackageDir)/%(Layout.Identity)/%(Layout.License)" />
+        <Copy SourceFiles="$(PublishDir)/LICENSE" DestinationFolder="$(PackageDir)/%(Layout.Identity)/%(Layout.License)" />
         <Copy SourceFiles="$(PublishDir)/$(AssemblyName)$(NativeBinaryExt)" DestinationFolder="$(PackageDir)/%(Layout.Identity)/%(Layout.Bin)" />
         <ZipDirectory DestinationFile="$(PackageDir)/%(Layout.Identity).zip"
                       SourceDirectory="$(PackageDir)/%(Layout.Identity)" Overwrite="true" />

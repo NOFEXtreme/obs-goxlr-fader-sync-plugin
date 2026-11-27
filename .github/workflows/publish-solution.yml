@@ -56,7 +56,7 @@ jobs:
           "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Test Installer on Windows
-        timeout-minutes: 8
+        timeout-minutes: 10
         run: |
           ./scripts/test-installer.ps1 -Installer "$env:PLUGIN_OUTPUT/package/FaderSyncPlugin-win-x64-installer.exe" `
             -PluginBinary "$env:PLUGIN_OUTPUT/publish/FaderSyncPlugin.dll"

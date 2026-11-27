@@ -32,8 +32,10 @@ if (-not $version.Version -or -not $version.FileVersion) { throw 'Plugin version
 if ($LASTEXITCODE -ne 0) { throw 'Plugin build failed.' }
 
 $binary = Join-Path $pluginOutput 'publish/FaderSyncPlugin.dll'
+$license = Join-Path $pluginOutput 'publish/LICENSE'
 if (Test-Path -LiteralPath $setup) { Remove-Item -LiteralPath $setup }
-& $InnoCompiler /Qp "/DVersion=$($version.Version)" "/DFileVersion=$($version.FileVersion)" "/DPluginBinary=$binary" "/O$package" $installer
+& $InnoCompiler /Qp "/DVersion=$($version.Version)" "/DFileVersion=$($version.FileVersion)" `
+    "/DPluginBinary=$binary" "/DLicensePath=$license" "/O$package" $installer
 if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
 
 & (Join-Path $PSScriptRoot 'verify-packages.ps1') -WindowsDirectory $package -WindowsBinary $binary
