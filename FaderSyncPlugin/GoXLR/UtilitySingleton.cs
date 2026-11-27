@@ -6,7 +6,7 @@ namespace FaderSync.GoXLR;
 
 public static class UtilitySingleton
 {
-    private static readonly Logger Log = new Logger(typeof(Plugin), Module.Name);
+    private static readonly Logger Log = new(nameof(UtilitySingleton));
     private static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(2);
     private static readonly object Lock = new();
 

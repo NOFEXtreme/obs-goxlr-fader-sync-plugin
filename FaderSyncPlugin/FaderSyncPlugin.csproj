@@ -2,23 +2,19 @@
     
     <PropertyGroup>
         <!-- This Version will be used in CI -->
-        <Version>1.4.0-beta.1</Version>
+        <Version>1.4.0-beta.2</Version>
         <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
         <Copyright>© Malte Linke</Copyright>
     </PropertyGroup>
 
     <PropertyGroup>
-        <TargetFramework>net9.0</TargetFramework>
+        <TargetFramework>net10.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-        <StripSymbols>true</StripSymbols>
-        <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
         <PublishAot>true</PublishAot>
-        <PublishTrimmed>true</PublishTrimmed>
         <IsAotCompatible>true</IsAotCompatible>
-        <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
         <RootNamespace>FaderSync</RootNamespace>
     </PropertyGroup>
 

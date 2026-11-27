@@ -10,18 +10,12 @@ public class SocketClient : IDisposable
     internal const int MaxMessageLength = 8 * 1024 * 1024;
     private readonly NamedPipeClientStream _client;
 
-    public bool IsConnected => _client.IsConnected;
-
     public SocketClient(string socketName)
     {
         _client = new NamedPipeClientStream(".", socketName, PipeDirection.InOut, PipeOptions.Asynchronous);
     }
 
-    public void Connect() => _client.Connect(5000);
-
     public Task ConnectAsync(CancellationToken cancellationToken) => _client.ConnectAsync(cancellationToken);
-
-    public void SendMessage(string message) => SendMessageAsync(message, CancellationToken.None).GetAwaiter().GetResult();
 
     public async Task SendMessageAsync(string message, CancellationToken cancellationToken)
     {
@@ -33,8 +27,6 @@ public class SocketClient : IDisposable
         await _client.WriteAsync(messageBytes, cancellationToken).ConfigureAwait(false);
         await _client.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
-
-    public string ReadMessage() => ReadMessageAsync(CancellationToken.None).GetAwaiter().GetResult();
 
     public Task<string> ReadMessageAsync(CancellationToken cancellationToken) => ReadMessageAsync(_client, cancellationToken);
 

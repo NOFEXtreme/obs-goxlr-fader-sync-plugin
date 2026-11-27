@@ -3,24 +3,43 @@ on:
   workflow_dispatch:
   push:
     branches: [beta]
-    paths:
-      - .gitattributes
-      - .github/workflows/create-release-draft.yml
-      - FaderSyncPlugin/FaderSyncPlugin.csproj
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-draft-${{ github.ref }}
+  group: beta-release-${{ github.ref }}
 
 jobs:
   publish:
     if: github.ref == 'refs/heads/beta'
     uses: ./.github/workflows/publish-solution.yml
 
+  scan:
+    name: CodeQL (C# and Actions)
+    if: github.ref == 'refs/heads/beta'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: csharp, actions
+          build-mode: none
+      - uses: github/codeql-action/analyze@v4
+        with:
+          output: sarif
+          # Default setup owns the repository's code-scanning uploads.
+          upload: never
+      - uses: actions/upload-artifact@v7
+        with:
+          name: codeql-sarif
+          path: sarif/*.sarif
+          if-no-files-found: error
+
   release:
-    needs: [ publish ]
+    needs: [publish, scan]
     permissions:
       contents: write
     runs-on: ubuntu-24.04
@@ -32,6 +51,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           path: artifacts
+          pattern: "*-artifacts"
 
       - name: Verify Release Packages
         shell: pwsh
@@ -56,8 +76,12 @@ jobs:
           }
           tag_ref=$(git ls-remote --tags origin "refs/tags/$tag")
           release_id=$(find_release)
+          if [[ -n "$release_id" ]] && gh api "$api/releases/$release_id" | jq -e '(.draft | not) and .prerelease' > /dev/null && [[ -n "$tag_ref" ]]; then
+            printf 'Pre-release `%s` already exists. No release assets were changed.\n' "$tag" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           if [[ -n "$tag_ref$release_id" ]]; then
-            echo "A tag or release already exists for $tag." >&2
+            echo "A tag or unpublished release already exists for $tag." >&2
             exit 1
           fi
           files=(

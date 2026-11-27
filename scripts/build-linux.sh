@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-package="$root/FaderSyncPlugin/bin/Release/net9.0/linux-x64/package"
+package="$root/FaderSyncPlugin/bin/Release/net10.0/linux-x64/package"
 if [[ $# -gt 1 || ($# -eq 1 && $1 != --install) ]]; then
     echo "Usage: $0 [--install]" >&2
     exit 2

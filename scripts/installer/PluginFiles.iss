@@ -10,7 +10,7 @@ type
   end;
 
   TPluginFile = record
-    Path, BackupName, PreviousHash: string;
+    Path, BackupName, PayloadHash, PreviousHash: string;
     Changed: Boolean;
   end;
 
@@ -103,7 +103,7 @@ begin
   CloseHandle(Handle);
 end;
 
-procedure AddFile(Path, BackupName: string);
+procedure AddFile(Path, BackupName, PayloadHash: string);
 var
   I: Integer;
 begin
@@ -113,6 +113,7 @@ begin
   SetArrayLength(Files, I + 1);
   Files[I].Path := Path;
   Files[I].BackupName := BackupName;
+  Files[I].PayloadHash := PayloadHash;
 end;
 
 function BinaryDir(Param: string): string;
@@ -133,12 +134,52 @@ begin
   if (Target.Mode <> PortableMode) or (Target.Major >= 33) then Result := Result + '\data';
 end;
 
+function IsPluginLicense(Path: string): Boolean;
+var
+  Bytes: AnsiString;
+  Text: string;
+begin
+  { Match the packaged MIT license, allowing old Windows CRLF copies. }
+  Result := False;
+  if not LoadStringFromFile(Path, Bytes) then Exit;
+  Text := Bytes;
+  StringChangeEx(Text, #13#10, #10, True);
+  Result := CompareText(GetSHA256OfString(Text), LicenseHash) = 0;
+end;
+
+function IsPluginDll(Path: string): Boolean;
+var
+  Image: AnsiString;
+begin
+  { File name, libobs entry points and copyright in the PE version resource. }
+  Result := ReadX64Image(Path, Image) and
+    (Pos(AnsiString(ModuleFile + #0), Image) > 0) and
+    (Pos(AnsiString('obs_module_load' + #0), Image) > 0) and
+    (Pos(AnsiString('obs_module_set_pointer' + #0), Image) > 0) and
+    (Pos(AnsiString('M'#0'a'#0'l'#0't'#0'e'#0' '#0'L'#0'i'#0'n'#0'k'#0'e'#0), Image) > 0);
+end;
+
+procedure CheckPluginFile(Path: string);
+var
+  Owned: Boolean;
+begin
+  CheckReplaceable(Path);
+  if not FileExists(Path) then Exit;
+  if CompareText(ExtractFileName(Path), ModuleFile) = 0 then Owned := IsPluginDll(Path)
+  else Owned := IsPluginLicense(Path);
+  if not Owned then RaiseException('This file does not belong to GoXLR Fader Sync Plugin: ' + Path);
+end;
+
+procedure AddLegacyLicense(Path, BackupName: string);
+begin
+  if IsPluginLicense(Path) then AddFile(Path, BackupName, '');
+end;
+
 procedure PlanFiles;
 var
-  ProgramData, LegacyBin, LegacyData, Modern: string;
+  LegacyBin, LegacyData, Modern: string;
 begin
   SetArrayLength(Files, 0);
-  ProgramData := ExpandConstant('{commonappdata}\obs-studio');
   LegacyBin := Target.Root + '\obs-plugins\64bit';
   LegacyData := Target.Root + '\data\obs-plugins\' + ModuleName;
   if Target.Mode = PortableMode then begin
@@ -147,17 +188,17 @@ begin
   end
   else begin
     Modern := SharedPluginRoot;
-    BackupRoot := ProgramData + '\FaderSyncPlugin-backups';
+    BackupRoot := ExpandConstant('{commonappdata}\obs-studio\FaderSyncPlugin-backups');
   end;
 
-  AddFile(BinaryDir('') + '\' + ModuleFile, 'previous.dll');
-  AddFile(LicenseDir('') + '\LICENSE', 'previous-LICENSE');
-  AddFile(Modern + '\' + ModuleFile, 'modern.dll');
-  AddFile(Modern + '\LICENSE', 'modern-LICENSE');
+  AddFile(BinaryDir('') + '\' + ModuleFile, 'previous.dll', '{#GetSHA256OfFile(PluginBinary)}');
+  AddFile(LicenseDir('') + '\LICENSE', 'previous-LICENSE', LicenseHash);
+  AddFile(Modern + '\' + ModuleFile, 'modern.dll', '');
+  AddLegacyLicense(Modern + '\LICENSE', 'modern-LICENSE');
   if Target.Mode = StandardMode then
-    AddFile(Modern + '\bin\64bit\' + ModuleFile, 'programdata-legacy.dll');
-  AddFile(LegacyBin + '\' + ModuleFile, 'obs-root.dll');
-  AddFile(LegacyData + '\LICENSE', 'obs-root-LICENSE');
+    AddFile(Modern + '\bin\64bit\' + ModuleFile, 'programdata-legacy.dll', '');
+  AddFile(LegacyBin + '\' + ModuleFile, 'obs-root.dll', '');
+  AddLegacyLicense(LegacyData + '\LICENSE', 'obs-root-LICENSE');
 end;
 
 procedure CheckOverride(Dir: string; Modern: Boolean);
@@ -180,11 +221,16 @@ var
   I: Integer;
 begin
   if Target.Mode <> StandardMode then Exit;
-  for I := 0 to GetArrayLength(Installs) - 1 do
-    if (Installs[I].Mode = StandardMode) and (Installs[I].Major >= 32) and
-      ((Installs[I].Major < 33) <> (Target.Major < 33)) then
+  for I := 0 to GetArrayLength(Installs) - 1 do begin
+    if (Installs[I].Mode <> StandardMode) or (Installs[I].Major < 32) then Continue;
+    if (Installs[I].Major < 33) <> (Target.Major < 33) then
       RaiseException('OBS ' + Installs[I].Version + ' at ' + Installs[I].Root +
         ' needs a different layout in the shared ProgramData directory. Choose a Portable installation to keep them independent.');
+    if (Target.Major < 33) and not PathSame(Installs[I].Root, Target.Root) and
+      FileExists(Installs[I].Root + '\obs-plugins\64bit\' + ModuleFile) then
+      RaiseException('Another OBS installation has a separate copy of the plugin: ' + Installs[I].Root +
+        '. Resolve that duplicate or select that installation first.');
+  end;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): string;
@@ -199,14 +245,17 @@ begin
       RaiseException('The selected OBS Studio installation changed. Restart Setup and select it again.');
     CheckOtherInstallations;
     PlanFiles;
-    CheckOverride(GetEnv('OBS_PLUGINS_PATH'), True);
-    if (Target.Major < 33) and (GetEnv('OBS_PLUGINS_DATA_PATH') <> '') then
+    if Target.Major >= 33 then begin
+      CheckOverride(GetEnv('OBS_PLUGINS_PATH'), True);
+      if GetEnv('OBS_LEGACY_PLUGINS_DATA_PATH') <> '' then
+        CheckOverride(GetEnv('OBS_LEGACY_PLUGINS_PATH'), False);
+    end
+    else if GetEnv('OBS_PLUGINS_DATA_PATH') <> '' then
       CheckOverride(GetEnv('OBS_PLUGINS_PATH'), False);
-    CheckOverride(GetEnv('OBS_LEGACY_PLUGINS_PATH'), False);
     CheckPath(ExpandConstant('{app}'), True);
     CheckPath(BackupRoot, True);
     CheckPath(DataDir(''), True);
-    for I := 0 to GetArrayLength(Files) - 1 do CheckReplaceable(Files[I].Path);
+    for I := 0 to GetArrayLength(Files) - 1 do CheckPluginFile(Files[I].Path);
   except
     Result := GetExceptionMessage;
   end;
@@ -224,7 +273,7 @@ begin
   Instructions[2] := 'Copy the files listed below from this backup to their original paths:';
   Count := 3;
   for I := 0 to GetArrayLength(Files) - 1 do begin
-    CheckReplaceable(Files[I].Path);
+    CheckPluginFile(Files[I].Path);
     if not FileExists(Files[I].Path) then Continue;
     if Backup = '' then begin
       Backup := BackupRoot + '\' + GetDateTimeString('yyyymmdd-hhnnss', '-', ':') + '-' + IntToStr(Random(1000000000));
@@ -259,21 +308,6 @@ begin
   end
   else if FileExists(Path) and (CompareText(GetSHA256OfFile(Path), Files[Index].PreviousHash) = 0) then Exit;
   RaiseException('A plugin file changed during setup: ' + Path);
-end;
-
-procedure BeginReplacement;
-var
-  I: Integer;
-  Key: string;
-begin
-  SavePreviousFiles;
-  RequireClosedObs;
-  for I := 0 to GetArrayLength(Files) - 1 do RequireOriginal(I);
-  Key := InstallRegistryKey('');
-  RegQueryStringValue(HKLM64, Key, 'Root', PreviousRoot);
-  RegQueryDWordValue(HKLM64, Key, 'Mode', PreviousMode);
-  RegQueryDWordValue(HKLM64, Key, 'Major', PreviousMajor);
-  Replacing := True;
 end;
 
 procedure EnsureDirectory(Path: string);
@@ -315,27 +349,31 @@ end;
 procedure InstallPayload;
 var
   I: Integer;
+  Key, Path: string;
 begin
-  { BeforeInstall and AfterInstall notifications suppress exceptions. The
-    ssInstall event can stop Setup and let DeinitializeSetup restore the files. }
-  BeginReplacement;
+  { Inno does not restore overwritten files and allows skipping failed copies.
+    Commit the payload as one unit and let Inno own its install/uninstall records. }
+  SavePreviousFiles;
   ExtractTemporaryFile(ModuleFile);
   ExtractTemporaryFile('LICENSE');
   RequireClosedObs;
-  RequireOriginal(0);
-  ReplaceFile(ExpandConstant('{tmp}\') + ModuleFile, Files[0].Path, '{#GetSHA256OfFile(PluginBinary)}');
-  Files[0].Changed := True;
-  RequireOriginal(1);
-  ReplaceFile(ExpandConstant('{tmp}\LICENSE'), Files[1].Path, '{#GetSHA256OfFile(SourcePath + "..\..\LICENSE")}');
-  Files[1].Changed := True;
+  Key := InstallRegistryKey('');
+  RegQueryStringValue(HKLM64, Key, 'Root', PreviousRoot);
+  RegQueryDWordValue(HKLM64, Key, 'Mode', PreviousMode);
+  RegQueryDWordValue(HKLM64, Key, 'Major', PreviousMajor);
+  Replacing := True;
 
-  RequireClosedObs;
-  for I := 2 to GetArrayLength(Files) - 1 do begin
+  for I := 0 to GetArrayLength(Files) - 1 do begin
+    if (Files[I].PayloadHash = '') and (Files[I].PreviousHash = '') then Continue;
     RequireOriginal(I);
-    if Files[I].PreviousHash = '' then Continue;
-    if not DeleteFile(Files[I].Path) then RaiseException('Could not remove the old plugin file: ' + Files[I].Path);
+    Path := Files[I].Path;
+    if Files[I].PayloadHash <> '' then
+      ReplaceFile(AddBackslash(ExpandConstant('{tmp}')) + ExtractFileName(Path), Path, Files[I].PayloadHash)
+    else begin
+      if not DeleteFile(Path) then RaiseException('Could not remove the old plugin file: ' + Path);
+      Log('Removed old plugin file ' + Path);
+    end;
     Files[I].Changed := True;
-    Log('Removed old plugin file ' + Files[I].Path);
   end;
 end;
 
@@ -407,7 +445,6 @@ function InitializeUninstall: Boolean;
 var
   Key: string;
   Mode, Major: Cardinal;
-  I: Integer;
 begin
   Result := False;
   try
@@ -423,8 +460,8 @@ begin
       RaiseException('The plugin installation record is missing.');
     Target.Mode := Mode;
     Target.Major := Major;
-    PlanFiles;
-    for I := 0 to GetArrayLength(Files) - 1 do CheckReplaceable(Files[I].Path);
+    CheckPluginFile(BinaryDir('') + '\' + ModuleFile);
+    CheckPluginFile(LicenseDir('') + '\LICENSE');
     Result := True;
   except
     if UninstallGate <> 0 then CloseHandle(UninstallGate);

@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.IO.Pipes;
 using System.Text;
 using GoXLRUtilityClient.Native;
@@ -8,98 +9,55 @@ namespace UtilityClient.Test.Native;
 [TestOf(typeof(SocketClient))]
 public class SocketClientTest
 {
-    private readonly string _pipeNamePrefix = "goxlr-utility-mock-pipe-";
+    private const string Message = "Hello, GoXLR 🎚";
+    private static string PipeName => "goxlr-utility-test-" + Guid.NewGuid();
 
     [Test]
-    public void Connect_ShouldSetIsConnectedToTrue()
+    public async Task ConnectsToPipeServer()
     {
-        var pipeName = _pipeNamePrefix + Guid.NewGuid();
-        var mockPipeServer = new NamedPipeServerStream(pipeName, PipeDirection.InOut);
-        var socketClient = new SocketClient(pipeName);
+        var name = PipeName;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        using var client = new SocketClient(name);
 
-        Assert.That(socketClient.IsConnected, Is.False);
-        
-        // Act
-        socketClient.Connect();
+        await Task.WhenAll(server.WaitForConnectionAsync(timeout.Token), client.ConnectAsync(timeout.Token));
 
-        // Assert
-        Assert.That(socketClient.IsConnected);
-        
-        mockPipeServer.Dispose();
+        Assert.That(server.IsConnected, Is.True);
     }
 
     [Test]
-    public void SendMessage_ShouldSendCorrectMessage()
+    public async Task SendsBigEndianLengthAndUtf8Message()
     {
-        var pipeName = _pipeNamePrefix + Guid.NewGuid();
-        var testMessage = "Hello, World!";
+        var name = PipeName;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        using var client = new SocketClient(name);
+        await Task.WhenAll(server.WaitForConnectionAsync(timeout.Token), client.ConnectAsync(timeout.Token));
 
-        // connect client using a new thread
-        var clientThread = new Thread(() =>
-        {
-            var socketClient = new SocketClient(pipeName);
-            socketClient.Connect();
-            socketClient.SendMessage(testMessage);
-            socketClient.Dispose();
-        });
-        clientThread.Start();
-        
-        // connect server
-        var mockNamedPipeServerStream = new NamedPipeServerStream(pipeName);
-        var reader = new BinaryReader(mockNamedPipeServerStream);
+        await client.SendMessageAsync(Message, timeout.Token);
 
-        mockNamedPipeServerStream.WaitForConnection();
-        Assert.That(mockNamedPipeServerStream.IsConnected, Is.True);
-
-        var messageLength = -1;
-        var messageLengthBytes = reader.ReadBytes(4);
-        if (BitConverter.IsLittleEndian) Array.Reverse(messageLengthBytes);
-        messageLength = BitConverter.ToInt32(messageLengthBytes);
-        Assert.That(messageLength, Is.EqualTo(testMessage.Length));
-
-        var messageBytes = reader.ReadBytes(messageLength);
-        Assert.That(Encoding.UTF8.GetString(messageBytes), Is.EqualTo(testMessage));
-
-        mockNamedPipeServerStream.Dispose();
-        
-        // wait for client to finish
-        clientThread.Join();
+        var expected = Encoding.UTF8.GetBytes(Message);
+        var frame = new byte[4 + expected.Length];
+        await server.ReadExactlyAsync(frame, timeout.Token);
+        Assert.That(BinaryPrimitives.ReadUInt32BigEndian(frame), Is.EqualTo(expected.Length));
+        Assert.That(frame[4..], Is.EqualTo(expected));
     }
-    
+
     [Test]
-    public void ReadMessage_ShouldReadCorrectMessage()
+    public async Task ReadsBigEndianLengthAndUtf8Message()
     {
-        var pipeName = _pipeNamePrefix + Guid.NewGuid();
-        var testMessage = "Hello, World!";
+        var name = PipeName;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        using var client = new SocketClient(name);
+        await Task.WhenAll(server.WaitForConnectionAsync(timeout.Token), client.ConnectAsync(timeout.Token));
 
-        // connect server using a new thread
-        var serverThread = new Thread(() =>
-        {
-            var mockNamedPipeServerStream = new NamedPipeServerStream(pipeName);
-            var writer = new BinaryWriter(mockNamedPipeServerStream);
-            
-            mockNamedPipeServerStream.WaitForConnection();
-            Assert.That(mockNamedPipeServerStream.IsConnected, Is.True);
+        var body = Encoding.UTF8.GetBytes(Message);
+        var header = new byte[4];
+        BinaryPrimitives.WriteUInt32BigEndian(header, (uint)body.Length);
+        await server.WriteAsync(header, timeout.Token);
+        await server.WriteAsync(body, timeout.Token);
 
-            var messageBytes = Encoding.UTF8.GetBytes(testMessage);
-            var messageLengthBytes = BitConverter.GetBytes(messageBytes.Length);
-            if (BitConverter.IsLittleEndian) Array.Reverse(messageLengthBytes);
-            
-            writer.Write(messageLengthBytes);
-            writer.Write(messageBytes);
-            writer.Flush();
-            
-            mockNamedPipeServerStream.Dispose();
-        });
-        serverThread.Start();
-        
-        // connect client
-        var socketClient = new SocketClient(pipeName);
-        socketClient.Connect();
-        var message = socketClient.ReadMessage();
-        Assert.That(message, Is.EqualTo(testMessage));
-        
-        // wait for server to finish
-        serverThread.Join();
+        Assert.That(await client.ReadMessageAsync(timeout.Token), Is.EqualTo(Message));
     }
 }

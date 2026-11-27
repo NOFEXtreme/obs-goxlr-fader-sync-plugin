@@ -29,26 +29,31 @@ begin
     FileExists(Root + '\obs_portable_mode') or FileExists(Root + '\obs_portable_mode.txt');
 end;
 
+function ReadX64Image(Path: string; var Image: AnsiString): Boolean;
+var
+  PE: Integer;
+begin
+  Result := False;
+  if not LoadStringFromFile(Path, Image) or (Length(Image) < 64) then Exit;
+  if (Image[1] <> 'M') or (Image[2] <> 'Z') or (Ord(Image[63]) <> 0) or
+    (Ord(Image[64]) <> 0) then Exit;
+  PE := 1 + Ord(Image[61]) + 256 * Ord(Image[62]);
+  if (PE + 5 > Length(Image)) or (Copy(Image, PE, 4) <> 'PE' + #0 + #0) then Exit;
+  Result := (Ord(Image[PE + 4]) = $64) and (Ord(Image[PE + 5]) = $86);
+end;
+
 function ReadObsInstall(Path: string; Mode: Integer; var Install: TObsInstall): Boolean;
 var
   Major, Minor, Revision, Build: Word;
-  Header: AnsiString;
-  PE: Integer;
+  Image: AnsiString;
 begin
   Result := False;
   Install.Root := '';
   if Trim(Path) = '' then Exit;
   Path := NormalizeRoot(Path);
   if (Length(Path) < 3) or (Copy(Path, 2, 2) <> ':\') then Exit;
-  if not GetVersionComponents(Path + ObsExe, Major, Minor, Revision, Build) then Exit;
-
-  { File version resources alone cannot distinguish an x64 build from ARM64. }
-  if not LoadStringFromFile(Path + ObsExe, Header) or (Length(Header) < 64) then Exit;
-  if (Header[1] <> 'M') or (Header[2] <> 'Z') or (Ord(Header[63]) <> 0) or
-    (Ord(Header[64]) <> 0) then Exit;
-  PE := 1 + Ord(Header[61]) + 256 * Ord(Header[62]);
-  if (PE + 5 > Length(Header)) or (Copy(Header, PE, 4) <> 'PE' + #0 + #0) then Exit;
-  if (Ord(Header[PE + 4]) <> $64) or (Ord(Header[PE + 5]) <> $86) then Exit;
+  if not GetVersionComponents(Path + ObsExe, Major, Minor, Revision, Build) or
+    not ReadX64Image(Path + ObsExe, Image) then Exit;
 
   if HasPortableMarker(Path) then Mode := PortableMode;
   Install.Root := Path;

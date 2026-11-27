@@ -10,7 +10,7 @@ $env:DOTNET_NOLOGO = '1'
 $root = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $root 'FaderSyncPlugin/FaderSyncPlugin.csproj'
 $installer = Join-Path $PSScriptRoot 'installer/FaderSyncPlugin.iss'
-$pluginOutput = Join-Path $root 'FaderSyncPlugin/bin/Release/net9.0/win-x64'
+$pluginOutput = Join-Path $root 'FaderSyncPlugin/bin/Release/net10.0/win-x64'
 $package = Join-Path $pluginOutput 'package'
 $setup = Join-Path $package 'FaderSyncPlugin-win-x64-installer.exe'
 

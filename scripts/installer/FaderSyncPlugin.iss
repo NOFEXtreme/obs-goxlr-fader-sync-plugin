@@ -10,7 +10,8 @@
 
 #define PluginName "GoXLR Fader Sync Plugin"
 #define DllName "FaderSyncPlugin.dll"
-#define Url "https://github.com/parzival-space/obs-goxlr-fader-sync-plugin"
+#define Url "https://github.com/NOFEXtreme/obs-goxlr-fader-sync-plugin"
+#define LicensePath SourcePath + "..\..\LICENSE"
 
 [Setup]
 AppName={#PluginName}
@@ -18,7 +19,8 @@ AppId=FaderSyncPlugin-{code:InstallKey}
 AppVersion={#Version}
 AppPublisher=Malte Linke
 AppPublisherURL={#Url}
-AppSupportURL={#Url}
+AppSupportURL={#Url}/issues
+AppUpdatesURL={#Url}/releases
 AppCopyright=Copyright (C) Malte Linke
 VersionInfoVersion={#FileVersion}
 VersionInfoProductVersion={#FileVersion}
@@ -29,6 +31,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 WizardStyle=modern
+DisableStartupPrompt=yes
 SetupIconFile=FaderSyncPlugin.ico
 DefaultDirName={commonappdata}\obs-studio\FaderSyncPlugin-installs
 DisableDirPage=yes
@@ -38,6 +41,7 @@ UsePreviousAppDir=no
 UsePreviousLanguage=no
 UninstallDisplayName={code:DisplayName}
 UninstallDisplayIcon={uninstallexe}
+UninstallLogMode=overwrite
 SetupMutex=Global\FaderSyncPluginSetup
 AppMutex=OBSStudioCore
 CloseApplications=no
@@ -69,6 +73,7 @@ Root: HKLM; Subkey: "{code:InstallRegistryKey}"; ValueType: dword; ValueName: "M
 const
   ModuleName = 'FaderSyncPlugin';
   ModuleFile = '{#DllName}';
+  LicenseHash = '{#GetSHA256OfFile(LicensePath)}';
   InstallsKey = 'SOFTWARE\FaderSyncPlugin\Installations';
   UninstallKey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\';
   UnknownMode = 0;

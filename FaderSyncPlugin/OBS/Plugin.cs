@@ -6,12 +6,12 @@ namespace FaderSync.OBS
 {
     public static class Plugin
     {
-        private static readonly Logger Log = new Logger(typeof(Plugin), Module.Name);
+        private static readonly Logger Log = new(nameof(Plugin));
 
         [UnmanagedCallersOnly(EntryPoint = "obs_module_set_pointer", CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
         public static unsafe void obs_module_set_pointer(obs_module* obsModulePointer)
         {
-            // do nothing, needs to exist for OBS to load
+            // Required by libobs even without module-owned data.
         }
 
         [UnmanagedCallersOnly(EntryPoint = "obs_module_ver", CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
@@ -31,13 +31,10 @@ namespace FaderSync.OBS
             {
                 Log.Info($"Loading {Module.Name} v{Module.Version}");
 
-                Log.Info("Loading filters...");
-                GoXlrChannelSyncFilter.Register(Module.Name);
+                GoXlrChannelSyncFilter.Register();
 
-                Log.Info("Preparing Utility Client...");
                 UtilitySingleton.Start();
 
-                Log.Info("Preloading complete.");
                 return true;
             }
             catch (Exception exception)
@@ -45,12 +42,6 @@ namespace FaderSync.OBS
                 Log.Error($"Plugin load failed: {exception.Message}");
                 return false;
             }
-        }
-
-        [UnmanagedCallersOnly(EntryPoint = "obs_module_post_load", CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-        public static void obs_module_post_load()
-        {
-            Log.Info("Plugin loaded!");
         }
 
         [UnmanagedCallersOnly(EntryPoint = "obs_module_unload", CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
@@ -65,22 +56,7 @@ namespace FaderSync.OBS
             {
                 Log.Error($"Plugin shutdown failed: {exception.Message}");
             }
-            finally
-            {
-                GoXlrChannelSyncFilter.Cleanup();
-            }
         }
 
-        [UnmanagedCallersOnly(EntryPoint = "obs_module_set_locale", CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-        public static unsafe void obs_module_set_locale(char* locale)
-        {
-            // TODO: add locale support
-        }
-
-        [UnmanagedCallersOnly(EntryPoint = "obs_module_free_locale", CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-        public static void obs_module_free_locale()
-        {
-            // do nothing, needs to exist for OBS to load
-        }
     }
 }

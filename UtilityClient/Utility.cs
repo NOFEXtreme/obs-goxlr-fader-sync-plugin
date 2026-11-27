@@ -39,8 +39,6 @@ public class Utility : WebsocketClient
         await GetStatusAsync(uri, timeout.Token).ConfigureAwait(false);
     }
 
-    public Task ConnectAsync(string uri) => ConnectAsync(new Uri(uri));
-
     public async Task ConnectAsync(Uri uri, CancellationToken cancellationToken = default)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
