@@ -149,14 +149,17 @@ end;
 
 function IsPluginDll(Path: string): Boolean;
 var
-  Image: AnsiString;
+  Bytes: AnsiString;
+  Image: string;
 begin
-  { File name, libobs entry points and copyright in the PE version resource. }
-  Result := ReadX64Image(Path, Image) and
-    (Pos(AnsiString(ModuleFile + #0), Image) > 0) and
-    (Pos(AnsiString('obs_module_load' + #0), Image) > 0) and
-    (Pos(AnsiString('obs_module_set_pointer' + #0), Image) > 0) and
-    (Pos(AnsiString('M'#0'a'#0'l'#0't'#0'e'#0' '#0'L'#0'i'#0'n'#0'k'#0'e'#0), Image) > 0);
+  Result := False;
+  if not ReadX64Image(Path, Bytes) then Exit;
+  Image := Bytes;
+  { Search for the ASCII export names and UTF-16LE copyright marker. }
+  Result := (Pos(ModuleFile + #0, Image) > 0) and
+    (Pos('obs_module_load' + #0, Image) > 0) and
+    (Pos('obs_module_set_pointer' + #0, Image) > 0) and
+    (Pos('M'#0'a'#0'l'#0't'#0'e'#0' '#0'L'#0'i'#0'n'#0'k'#0'e'#0, Image) > 0);
 end;
 
 procedure CheckPluginFile(Path: string);
