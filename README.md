@@ -27,8 +27,8 @@ Right-click an OBS audio source, open **Filters**, and add **Sync volume with Go
 
 - **Submix** selects A or B when available. With Submix off or a shared output level, the filter uses the common volume and remembers your selection.
 - **Volume Offset (dB)** adjusts the level by up to 60 dB in either direction. A fader position with zero gain stays silent at any offset.
-- **Mute Behaviour** defaults to **Sync OBS Mute**, which follows GoXLR on the OBS mute button. **Manual OBS Mute** silences the source with its volume and leaves the OBS mute button available for manual or Stream Deck control. Mute to All, Stream Mix, and Stream Mix + VOD silence the source. A VOD-only mute leaves the source active.
-- **Verbose logging** adds volume and mute changes to the standard OBS log.
+- **Mute Behavior** defaults to **Sync OBS mute button**, which follows GoXLR on the OBS mute button. **Manual OBS mute button** silences the source with its volume and leaves the OBS mute button available for manual or Stream Deck control. Mute to All, Stream Mix, and Stream Mix + VOD silence the source. A VOD-only mute leaves the source active.
+- **Verbose Logging** adds volume and mute changes to the standard OBS log.
 
 OBS keeps its current volume and mute during a disconnect. Capture the source before GoXLR fader gain so the fader's attenuation is applied once. Chat can apply its own dynamic processing, so the result depends on the capture path. The same gain curve is used across models and channels. Measurements covered Game, System, Music, Chat, and Sample on GoXLR Full firmware `1.5.1.901`.
 

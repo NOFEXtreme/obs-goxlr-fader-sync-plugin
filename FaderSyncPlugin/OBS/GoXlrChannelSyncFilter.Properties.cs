@@ -50,10 +50,10 @@ internal static unsafe partial class GoXlrChannelSyncFilter
         {
             var settings = data is null ? null : GetContext(data).Settings;
             var mixers = GetMixers(UtilitySingleton.Status);
-            var devices = AddList(properties, DeviceKey, "Device"u8, obs_combo_type.OBS_COMBO_TYPE_LIST);
+            var devices = AddList(properties, DeviceKey, "Device"u8);
             PopulateDevices(devices, mixers, settings?.DeviceSerial ?? "");
 
-            var channels = AddList(properties, ChannelKey, "Channel"u8, obs_combo_type.OBS_COMBO_TYPE_LIST);
+            var channels = AddList(properties, ChannelKey, "Channel"u8);
             AddItem(channels, "Microphone"u8, "Mic"u8);
             AddItem(channels, "Chat"u8, "Chat"u8);
             AddItem(channels, "Music"u8, "Music"u8);
@@ -61,14 +61,14 @@ internal static unsafe partial class GoXlrChannelSyncFilter
             AddItem(channels, "Console"u8, "Console"u8);
             AddItem(channels, "Line In"u8, "LineIn"u8);
             AddItem(channels, "System"u8, "System"u8);
-            AddItem(channels, "Samples / VOD"u8, "Sample"u8);
+            AddItem(channels, "Samples"u8, "Sample"u8);
             AddItem(channels, "Headphones"u8, "Headphones"u8);
             AddItem(channels, "Mic Monitor"u8, "MicMonitor"u8);
             AddItem(channels, "Line Out"u8, "LineOut"u8);
 
-            var submix = AddList(properties, SubmixKey, "Submix"u8, obs_combo_type.OBS_COMBO_TYPE_RADIO);
-            AddItem(submix, "Submix A / Default Mix"u8, "A"u8);
-            AddItem(submix, "Submix B"u8, "B"u8);
+            var submix = AddList(properties, SubmixKey, "Submix"u8);
+            AddItem(submix, "A mix (Default)"u8, "A"u8);
+            AddItem(submix, "B mix"u8, "B"u8);
             ObsProperties.obs_property_set_enabled(submix, settings is not null &&
                 SubmixAvailable(mixers, settings.DeviceSerial, settings.ChannelName) ? (byte)1 : (byte)0);
             ObsProperties.obs_property_set_modified_callback(devices, &UpdateSubmixAvailability);
@@ -77,14 +77,21 @@ internal static unsafe partial class GoXlrChannelSyncFilter
             fixed (byte* offset = VolumeOffsetKey, title = "Volume Offset (dB)"u8)
                 ObsProperties.obs_properties_add_float(properties, (sbyte*)offset, (sbyte*)title, -60, 60, 0.1);
 
-            var mute = AddList(properties, MuteKey, "Mute Behaviour"u8, obs_combo_type.OBS_COMBO_TYPE_RADIO);
-            AddItem(mute, "Sync OBS Mute"u8, "MUTE_CHANNEL"u8);
-            AddItem(mute, "Manual OBS Mute"u8, "FADER_VOLUME"u8);
-            fixed (byte* help = "Sync OBS Mute follows GoXLR on the OBS mute button. Manual OBS Mute sets volume to silence and leaves the OBS mute button under your control."u8)
+            var mute = AddList(properties, MuteKey, "Mute Behavior"u8);
+            AddItem(mute, "Sync OBS mute button"u8, "MUTE_CHANNEL"u8);
+            AddItem(mute, "Manual OBS mute button"u8, "FADER_VOLUME"u8);
+            fixed (byte* help = """
+                Sync: GoXLR controls the OBS mute button.
+                Manual: You control the OBS mute button (GoXLR mutes by setting volume to zero).
+                """u8)
                 ObsProperties.obs_property_set_long_description(mute, (sbyte*)help);
 
-            fixed (byte* verbose = VerboseKey, title = "Verbose logging"u8)
-                ObsProperties.obs_properties_add_bool(properties, (sbyte*)verbose, (sbyte*)title);
+            var verbose = AddList(properties, VerboseKey, "Verbose Logging"u8, obs_combo_format.OBS_COMBO_FORMAT_BOOL);
+            fixed (byte* off = "Disabled"u8, on = "Enabled"u8)
+            {
+                ObsProperties.obs_property_list_add_bool(verbose, (sbyte*)off, 0);
+                ObsProperties.obs_property_list_add_bool(verbose, (sbyte*)on, 1);
+            }
             return properties;
         }
         catch (Exception exception)
@@ -117,10 +124,11 @@ internal static unsafe partial class GoXlrChannelSyncFilter
         }
     }
 
-    private static bool SubmixAvailable(JsonObject? mixers, string serial, string channel) =>
-        !HasSharedVolume(channel) &&
-        ((mixers?[serial] as JsonObject)?["levels"] as JsonObject)?["submix"] is JsonObject submix &&
-        TryReadLevel(((submix["inputs"] as JsonObject)?[channel] as JsonObject)?["volume"], out _);
+    private static bool SubmixAvailable(JsonObject? mixers, string serial, string channel)
+    {
+        var levels = (mixers?[serial] as JsonObject)?["levels"] as JsonObject;
+        return !HasSharedVolume(channel) && TryReadLevel(SubmixVolume(levels?["submix"], channel), out _);
+    }
 
     private static string? DeviceType(JsonNode? mixer) =>
         ((mixer as JsonObject)?["hardware"] as JsonObject)?["device_type"] is JsonValue value &&
@@ -162,11 +170,11 @@ internal static unsafe partial class GoXlrChannelSyncFilter
     }
 
     private static obs_property* AddList(obs_properties* properties, ReadOnlySpan<byte> key, ReadOnlySpan<byte> title,
-        obs_combo_type type)
+        obs_combo_format format = obs_combo_format.OBS_COMBO_FORMAT_STRING)
     {
         fixed (byte* name = key, description = title)
             return ObsProperties.obs_properties_add_list(properties, (sbyte*)name, (sbyte*)description,
-                type, obs_combo_format.OBS_COMBO_FORMAT_STRING);
+                obs_combo_type.OBS_COMBO_TYPE_LIST, format);
     }
 
     private static void AddItem(obs_property* list, ReadOnlySpan<byte> title, ReadOnlySpan<byte> value)

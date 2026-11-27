@@ -130,18 +130,11 @@ internal static unsafe partial class GoXlrChannelSyncFilter
             mixer["fader_status"] is not JsonObject { Count: > 0 } faders)
             return false;
 
-        JsonNode? volume;
         var submix = levels["submix"];
-        // Utility gives output channels one shared level and supplies B values for inputs only.
-        if (settings.SubmixB && !HasSharedVolume(settings.ChannelName) && submix is not null)
-        {
-            var inputs = (submix as JsonObject)?["inputs"] as JsonObject;
-            volume = (inputs?[settings.ChannelName] as JsonObject)?["volume"];
-        }
-        else
-        {
-            volume = (levels["volumes"] as JsonObject)?[settings.ChannelName];
-        }
+        // Utility provides B for inputs only. A missing or disabled Submix uses the common level.
+        var volume = settings.SubmixB && !HasSharedVolume(settings.ChannelName) && submix is not null
+            ? SubmixVolume(submix, settings.ChannelName)
+            : (levels["volumes"] as JsonObject)?[settings.ChannelName];
 
         if (!TryReadLevel(volume, out level))
             return false;
@@ -188,7 +181,13 @@ internal static unsafe partial class GoXlrChannelSyncFilter
         if (muteChanged && !muted) Obs.obs_source_set_muted(target, 0);
 
         if (settings.VerboseLogging && (volumeChanged || muteChanged))
-            Log.Info($"Updated volume for channel '{settings.ChannelName}' to {volume} (GoXLR muted: {muted})");
+            Log.Info($"Synchronized '{settings.ChannelName}' (target gain: {volume}, GoXLR muted: {muted})");
+    }
+
+    private static JsonNode? SubmixVolume(JsonNode? submix, string channel)
+    {
+        var inputs = (submix as JsonObject)?["inputs"] as JsonObject;
+        return (inputs?[channel] as JsonObject)?["volume"];
     }
 
     private static bool TryReadLevel(JsonNode? node, out int level)
