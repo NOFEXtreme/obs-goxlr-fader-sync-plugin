@@ -50,16 +50,13 @@ function Get-Uninstaller($Root) {
     return $uninstaller
 }
 
-function Wait-InstallerWindow($Caption, $Alternate) {
+function Wait-InstallerWindow($Description, [scriptblock]$Find) {
     for ($attempt = 0; $attempt -lt 120; $attempt++) {
-        $window = [InstallerTestWindow]::FindWindow([NullString]::Value, $Caption)
-        if ($window -eq [IntPtr]::Zero -and $Alternate) {
-            $window = [InstallerTestWindow]::FindWindow('#32770', $Alternate)
-        }
+        $window = & $Find
         if ($window -ne [IntPtr]::Zero) { return $window }
         Start-Sleep -Milliseconds 150
     }
-    throw "Installer window not found: $Caption"
+    throw "Installer window not found: $Description"
 }
 
 function Test-Cancel($Root) {
@@ -70,7 +67,13 @@ using System.Runtime.InteropServices;
 public static class InstallerTestWindow
 {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    public static extern IntPtr FindWindow(string className, string caption);
+    private static extern IntPtr FindWindow(string className, string caption);
+    public static IntPtr Wizard() => FindWindow("TWizardForm", null);
+    public static IntPtr CancelConfirmation()
+    {
+        var window = FindWindow(null, "Exit Setup");
+        return window != IntPtr.Zero ? window : FindWindow("#32770", "Setup");
+    }
     [DllImport("user32.dll")]
     public static extern IntPtr GetDlgItem(IntPtr dialog, int control);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -80,20 +83,26 @@ public static class InstallerTestWindow
     $log = Join-Path $fixture.FullName 'cancel32.log'
     $process = Start-Process $Installer -ArgumentList "/LOG=`"$log`"", "/OBS=`"$Root`"" -PassThru
     try {
-        $window = Wait-InstallerWindow 'Setup - GoXLR Fader Sync Plugin'
+        $window = Wait-InstallerWindow 'the Inno Setup wizard' { [InstallerTestWindow]::Wizard() }
         if (-not [InstallerTestWindow]::PostMessage($window, 0x0010, 0, 0)) { throw 'Cannot close test wizard.' }
-        $confirm = Wait-InstallerWindow 'Exit Setup' 'Setup'
+        $confirm = Wait-InstallerWindow 'Exit Setup' { [InstallerTestWindow]::CancelConfirmation() }
         $answer = 6
         $button = [InstallerTestWindow]::GetDlgItem($confirm, $answer)
         if ($button -eq [IntPtr]::Zero) {
             $answer = 1
             $button = [InstallerTestWindow]::GetDlgItem($confirm, $answer)
         }
-        if ($button -eq [IntPtr]::Zero -or -not [InstallerTestWindow]::PostMessage($confirm, 0x0111, $answer, $button) -or
+        if ($button -eq [IntPtr]::Zero -or
+            -not [InstallerTestWindow]::PostMessage($confirm, 0x0111, $answer, $button) -or
             -not $process.WaitForExit(20000) -or $process.ExitCode -ne 2) {
             throw 'Cancellation did not return the Inno Setup exit code 2.'
         }
         if ((Get-Content $log -Raw) -match 'Installed plugin file') { throw 'Cancel reached the file write stage.' }
+    }
+    catch {
+        if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log | Write-Host }
+        Write-Host "Runner desktop interactive: $([Environment]::UserInteractive)."
+        throw
     }
     finally { if (-not $process.HasExited) { $process.Kill($true) } }
 }

@@ -85,8 +85,11 @@ jobs:
 
       - name: Setup AOT Dependencies
         run: |
-          sudo apt update
-          sudo apt install clang zlib1g-dev -y
+          if ! command -v clang >/dev/null || [[ ! -f /usr/include/zlib.h ]]; then
+            sources=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=-)
+            sudo apt-get "${sources[@]}" update
+            sudo apt-get "${sources[@]}" install -y clang zlib1g-dev
+          fi
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
