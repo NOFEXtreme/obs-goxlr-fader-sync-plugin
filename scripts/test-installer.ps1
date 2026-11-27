@@ -11,7 +11,6 @@ $repo = 'https://github.com/NOFEXtreme/obs-goxlr-fader-sync-plugin/releases/down
 $obsReleases = 'https://github.com/obsproject/obs-studio/releases/download'
 $binaryName = 'FaderSyncPlugin.dll'
 $expectedHash = (Get-FileHash $PluginBinary).Hash
-$legacyLicense = Join-Path (Split-Path -Parent $PSScriptRoot) 'LICENSE'
 $packagedLicense = Join-Path (Split-Path -Parent $PluginBinary) 'LICENSE'
 
 function Get-TestDownload($Url, $Hash) {
@@ -34,6 +33,10 @@ function Invoke-Setup($Program, $Case, $Root = '') {
 
 function Assert-Hash($Path, $Hash) {
     if ((Get-FileHash -LiteralPath $Path).Hash -ne $Hash) { throw "Unexpected contents: $Path" }
+}
+
+function Assert-Hashes($Hashes) {
+    foreach ($file in $Hashes.GetEnumerator()) { Assert-Hash $file.Key $file.Value }
 }
 
 function Get-Uninstaller($Root) {
@@ -107,6 +110,23 @@ public static class InstallerTestWindow
     finally { if (-not $process.HasExited) { $process.Kill($true) } }
 }
 
+function Get-ObsStartupResult($Log, $Version) {
+    if ($Log -match '\[FaderSyncPlugin\].*Plugin load failed:' -or
+        $Log -match '(?:Failed to (?:initialize module|load module file)|Skipping module)[^\r\n]*\bFaderSyncPlugin\b') {
+        return 'PluginError'
+    }
+    if ($Log -match '==== Startup complete') {
+        $versionPattern = [regex]::Escape($Version)
+        if ($Log -match "(?m)Loading FaderSyncPlugin v$versionPattern\r?$" -and
+            $Log -match '(?m)^\S+:[ \t]+FaderSyncPlugin\.dll[ \t]*\r?$') {
+            return 'Loaded'
+        }
+        return 'PluginMissing'
+    }
+    if ($Log -match 'Failed to initialize video[:.]') { return 'GraphicsUnavailable' }
+    return 'Pending'
+}
+
 function Test-ObsStartup($Root) {
     $bin = Join-Path $Root 'bin/64bit'
     $process = Start-Process (Join-Path $bin 'obs64.exe') -WorkingDirectory $bin `
@@ -114,21 +134,31 @@ function Test-ObsStartup($Root) {
     try {
         $logs = Join-Path $Root 'config/obs-studio/logs'
         $expected = (Get-Item $PluginBinary).VersionInfo.ProductVersion.TrimEnd()
-        for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        $result = 'Pending'
+        for ($attempt = 0; $attempt -lt 30; $attempt++) {
             $latest = Get-ChildItem $logs -Filter '*.txt' -ErrorAction SilentlyContinue |
                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
             if ($latest) {
                 $log = Get-Content $latest.FullName -Raw
-                if ($log.Contains("Loading FaderSyncPlugin v$expected") -and $log -match 'Startup complete') {
+                $result = Get-ObsStartupResult $log $expected
+                if ($result -eq 'Loaded' -and -not $process.HasExited) {
+                    $log -split '\r?\n' | Where-Object {
+                        $_ -match 'Loading FaderSyncPlugin|[ \t]FaderSyncPlugin\.dll\s*$|==== Startup complete'
+                    } | Write-Host
                     Write-Host 'PASS full OBS 32.2.2 started on Windows and loaded the release DLL.'
                     return
                 }
             }
-            if ($process.HasExited) { break }
+            if ($result -ne 'Pending' -or $process.HasExited) { break }
             Start-Sleep -Seconds 1
         }
-        Write-Warning 'Full OBS did not reach a confirmed plugin startup on the Windows runner.'
-        if ($latest) { Get-Content $latest.FullName -Tail 25 | Write-Host }
+        if ($latest) { Get-Content $latest.FullName -Tail 50 | Write-Host }
+        switch ($result) {
+            'PluginError' { throw 'OBS logged a FaderSyncPlugin load error.' }
+            'PluginMissing' { throw "OBS started without the expected FaderSyncPlugin v$expected." }
+            'GraphicsUnavailable' { throw 'OBS video initialization failed before the plugin check could run.' }
+            default { throw 'OBS exited or timed out without a successful startup check.' }
+        }
     }
     finally {
         if (-not $process.HasExited -and (-not $process.CloseMainWindow() -or -not $process.WaitForExit(8000))) {
@@ -151,8 +181,12 @@ try {
     finally { $zip.Dispose() }
 
     $old33 = Join-Path $obs33 "obs-plugins/64bit/$binaryName"
+    $legacyLicense = Join-Path $obs33 'data/obs-plugins/FaderSyncPlugin/LICENSE'
     $installed33 = Join-Path $obs33 "plugins/FaderSyncPlugin/$binaryName"
     $null = New-Item -ItemType Directory -Force (Split-Path $old33)
+    $null = New-Item -ItemType Directory -Force (Split-Path $legacyLicense)
+    $originalLicense = Join-Path (Split-Path -Parent $PSScriptRoot) 'LICENSE'
+    Copy-Item -LiteralPath $originalLicense -Destination $legacyLicense
     $null = New-Item -ItemType File (Join-Path $obs33 'portable_mode.txt')
     $stable = Get-TestDownload "$repo/v1.3.1.2/FaderSyncPlugin-win-x64-1.3.1.2.zip" `
         '76247a0d1170c2890dd08c9fc7bd77db6ba41676e0c3414da34e89fed6b72192'
@@ -167,9 +201,14 @@ try {
         throw 'OBS 33 migration from the published stable DLL failed.'
     }
     Assert-Hash $installed33 $expectedHash
-    $oldCopy = Get-ChildItem (Join-Path $obs33 'FaderSyncPlugin-backups') -Recurse -File -Filter 'obs-root.dll'
-    if (@($oldCopy).Count -ne 1) { throw 'The installer did not write exactly one backup of the old module.' }
+    $backups33 = Join-Path $obs33 'FaderSyncPlugin-backups'
+    $oldCopy = Get-ChildItem $backups33 -Recurse -File -Filter 'obs-root.dll'
+    $oldLicenseCopy = Get-ChildItem $backups33 -Recurse -File -Filter 'obs-root-LICENSE'
+    if (@($oldCopy).Count -ne 1 -or @($oldLicenseCopy).Count -ne 1 -or (Test-Path -LiteralPath $legacyLicense)) {
+        throw 'The installer did not migrate and back up the old DLL and LICENSE.'
+    }
     Assert-Hash $oldCopy.FullName $oldHash
+    Assert-Hash $oldLicenseCopy.FullName (Get-FileHash $originalLicense).Hash
     Write-Host "PASS OBS 33 migrated the published 1.3.1.2 binary (SHA-256 $oldHash)."
 
     Set-Content -LiteralPath $old33 'a different file with the same name'
@@ -187,20 +226,28 @@ try {
     $plugin32 = Join-Path $obs32 "obs-plugins/64bit/$binaryName"
     $licenseDir32 = Join-Path $obs32 'data/obs-plugins/FaderSyncPlugin'
     $license32 = Join-Path $licenseDir32 'LICENSE'
-    $scene = Join-Path $obs32 'config/obs-studio/scene-test.json'
-    $null = New-Item -ItemType Directory -Force (Split-Path $scene)
-    Set-Content $scene '{"scene":"keep this file"}'
-    $sceneHash = (Get-FileHash $scene).Hash
+    $settings = @{
+        'basic/scenes/Preserved.json' = '{"name":"Preserved","sources":[],"scene_order":[]}'
+        'basic/profiles/Preserved/basic.ini' = "[General]`nName=Preserved"
+        'user.ini' = "[BasicWindow]`nWarnBeforeStartingStream=true"
+    }
+    $settingsHashes = @{}
+    foreach ($setting in $settings.GetEnumerator()) {
+        $path = Join-Path $obs32 ('config/obs-studio/' + $setting.Key)
+        $null = New-Item -ItemType Directory -Force (Split-Path $path)
+        Set-Content -LiteralPath $path -Value $setting.Value
+        $settingsHashes[$path] = (Get-FileHash -LiteralPath $path).Hash
+    }
 
-    $beta2 = Get-TestDownload "$repo/v1.4.0-beta.2/FaderSyncPlugin-win-x64-installer.exe" `
-        'dc3fc9b3d4b70919f8abdc3ec770221327798692beff34c1ea3a3d092ac2b324'
-    if ((Invoke-Setup $beta2 'seed32' $obs32) -ne 0) { throw 'Failed to install the published beta.2.' }
-    $beta2Hash = 'b95962a67c582a6c872baae6a8973a84743af31d7e688f0a4ac7d867095495d6'
-    Assert-Hash $plugin32 $beta2Hash
-    $licenseHash = (Get-FileHash $legacyLicense).Hash
-    Assert-Hash $license32 $licenseHash
+    $beta3 = Get-TestDownload "$repo/v1.4.0-beta.3/FaderSyncPlugin-win-x64-installer.exe" `
+        '72a002980667aa65ccfcbc96751991282bca046f1a64eaace510c25cf4f811b8'
+    if ((Invoke-Setup $beta3 'seed32' $obs32) -ne 0) { throw 'Failed to install the published beta.3.' }
+    $previous = $settingsHashes.Clone()
+    $previous[$plugin32] = '4d8c0dee28bd106db9a05ab4bac19072315a1ff1b658a5a853c29ed27c8c1494'
+    $previous[$license32] = '0fe6dabfff2c5b2243446f31cb9eae798c62e5d0324febd2c5af7490d5be20ef'
     $oldUninstaller = Get-Uninstaller $obs32
-    $uninstallHash = (Get-FileHash $oldUninstaller).Hash
+    $previous[$oldUninstaller] = (Get-FileHash $oldUninstaller).Hash
+    Assert-Hashes $previous
 
     $acl = Get-Acl -LiteralPath $licenseDir32
     $restricted = Get-Acl -LiteralPath $licenseDir32
@@ -218,36 +265,46 @@ try {
         }
     }
     finally { Set-Acl -LiteralPath $licenseDir32 -AclObject $acl }
-    Assert-Hash $plugin32 $beta2Hash
-    Assert-Hash $license32 $licenseHash
-    Assert-Hash $scene $sceneHash
-    Assert-Hash $oldUninstaller $uninstallHash
-    Write-Host "PASS late write failure restored the published beta.2 DLL (SHA-256 $beta2Hash)."
+    Assert-Hashes $previous
+    if ((Get-Uninstaller $obs32) -ne $oldUninstaller) { throw 'Rollback changed the uninstaller registration.' }
+    Write-Host "PASS late write failure restored beta.3 DLL and bundled LICENSE (SHA-256 $($previous[$plugin32]))."
 
     Test-Cancel $obs32
-    Assert-Hash $plugin32 $beta2Hash
-    Assert-Hash $license32 $licenseHash
-    Assert-Hash $scene $sceneHash
-    Assert-Hash $oldUninstaller $uninstallHash
-    Write-Host 'PASS wizard cancellation preserved the DLL, license, registration, and scene.'
+    Assert-Hashes $previous
+    if ((Get-Uninstaller $obs32) -ne $oldUninstaller) { throw 'Cancel changed the uninstaller registration.' }
+    Write-Host 'PASS wizard cancellation preserved the DLL, LICENSE, uninstaller, and OBS settings.'
 
     if ((Invoke-Setup $Installer 'upgrade32' $obs32) -ne 0) { throw 'OBS 32 installation after rollback failed.' }
     Assert-Hash $plugin32 $expectedHash
     Assert-Hash $installed33 $expectedHash
     Assert-Hash $license32 (Get-FileHash $packagedLicense).Hash
-    Assert-Hash (Join-Path (Split-Path $installed33) 'LICENSE') (Get-FileHash $packagedLicense).Hash
+    $license33 = Join-Path (Split-Path $installed33) 'LICENSE'
+    Assert-Hash $license33 (Get-FileHash $packagedLicense).Hash
+    Assert-Hashes $settingsHashes
+    $backups32 = @(Get-ChildItem (Join-Path $obs32 'FaderSyncPlugin-backups') -Directory)
+    if ($backups32.Count -ne 2) { throw 'Expected a beta.3 backup for both upgrade attempts.' }
+    foreach ($backup in $backups32) {
+        Assert-Hash (Join-Path $backup.FullName 'previous.dll') $previous[$plugin32]
+        Assert-Hash (Join-Path $backup.FullName 'previous-LICENSE') $previous[$license32]
+    }
+    Write-Host 'PASS upgraded the published beta.3 and preserved the contents of the bundled LICENSE backup.'
     Test-ObsStartup $obs32
-    if ((Invoke-Setup (Get-Uninstaller $obs33) 'uninstall33') -ne 0 -or (Test-Path -LiteralPath $installed33)) {
+    foreach ($path in @($settingsHashes.Keys)) {
+        $settingsHashes[$path] = (Get-FileHash -LiteralPath $path).Hash
+    }
+    if ((Invoke-Setup (Get-Uninstaller $obs33) 'uninstall33') -ne 0 -or
+        (Test-Path -LiteralPath $installed33) -or (Test-Path -LiteralPath $license33)) {
         throw 'Could not uninstall the registered OBS 33 copy.'
     }
     if ((Get-Content -LiteralPath $old33) -ne 'a different file with the same name') {
         throw 'Uninstall changed an unregistered legacy file.'
     }
     Assert-Hash $plugin32 $expectedHash
-    if ((Invoke-Setup (Get-Uninstaller $obs32) 'uninstall32') -ne 0 -or (Test-Path -LiteralPath $plugin32)) {
+    if ((Invoke-Setup (Get-Uninstaller $obs32) 'uninstall32') -ne 0 -or
+        (Test-Path -LiteralPath $plugin32) -or (Test-Path -LiteralPath $license32)) {
         throw 'Could not uninstall the registered OBS 32 copy.'
     }
-    Assert-Hash $scene $sceneHash
-    Write-Host 'PASS independent Portable OBS 32/33 updates, uninstall, and preservation of unrelated files.'
+    Assert-Hashes $settingsHashes
+    Write-Host 'PASS independent Portable OBS 32/33 updates and uninstall preserved scenes, profiles, and settings.'
 }
 finally { Remove-Item -LiteralPath $fixture.FullName -Recurse -Force }
