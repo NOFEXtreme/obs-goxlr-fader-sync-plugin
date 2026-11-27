@@ -53,6 +53,79 @@ function Get-Uninstaller($Root) {
     return $uninstaller
 }
 
+function Test-InstallerIcon {
+    Add-Type @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+
+public static class InstallerIconTest
+{
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr LoadLibraryEx(string path, IntPtr file, uint flags);
+    [DllImport("kernel32.dll")]
+    private static extern bool FreeLibrary(IntPtr module);
+    [DllImport("kernel32.dll", EntryPoint = "FindResourceW", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern IntPtr FindResource(IntPtr module, string name, IntPtr type);
+    [DllImport("kernel32.dll", EntryPoint = "FindResourceW", ExactSpelling = true)]
+    private static extern IntPtr FindResource(IntPtr module, IntPtr name, IntPtr type);
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LoadResource(IntPtr module, IntPtr resource);
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LockResource(IntPtr resource);
+    [DllImport("kernel32.dll")]
+    private static extern int SizeofResource(IntPtr module, IntPtr resource);
+    [DllImport("user32.dll")]
+    private static extern int LookupIconIdFromDirectoryEx(IntPtr group, bool icon, int width, int height, uint flags);
+    [DllImport("user32.dll")]
+    private static extern IntPtr CreateIconFromResourceEx(byte[] data, int bytes, bool icon, uint version,
+        int width, int height, uint flags);
+    [DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr icon);
+
+    public static void Verify(string executable, string icon)
+    {
+        byte[] ico = File.ReadAllBytes(icon);
+        int count = BitConverter.ToUInt16(ico, 4);
+        IntPtr module = LoadLibraryEx(executable, IntPtr.Zero, 2); // LOAD_LIBRARY_AS_DATAFILE
+        if (module == IntPtr.Zero) throw new InvalidOperationException("Cannot read setup icon resources.");
+        try
+        {
+            IntPtr group = FindResource(module, "MAINICON", new IntPtr(14)); // RT_GROUP_ICON
+            IntPtr directory = LockResource(LoadResource(module, group));
+            if (directory == IntPtr.Zero || Marshal.ReadInt16(directory, 4) != count)
+                throw new InvalidOperationException("Setup icon frame count does not match the ICO.");
+
+            for (int index = 0; index < count; index++)
+            {
+                int entry = 6 + 16 * index;
+                int size = ico[entry] == 0 ? 256 : ico[entry];
+                int length = BitConverter.ToInt32(ico, entry + 8);
+                int offset = BitConverter.ToInt32(ico, entry + 12);
+                int id = LookupIconIdFromDirectoryEx(directory, true, size, size, 0);
+                IntPtr frame = FindResource(module, new IntPtr(id), new IntPtr(3)); // RT_ICON
+                if (frame == IntPtr.Zero || SizeofResource(module, frame) != length)
+                    throw new InvalidOperationException($"Windows selected the wrong setup frame for {size} px.");
+                IntPtr data = LockResource(LoadResource(module, frame));
+                if (data == IntPtr.Zero) throw new InvalidOperationException($"Cannot read setup frame {size} px.");
+                byte[] image = new byte[length];
+                Marshal.Copy(data, image, 0, length);
+                if (!ico.AsSpan(offset, length).SequenceEqual(image))
+                    throw new InvalidOperationException($"Setup changed the {size} px icon frame.");
+                IntPtr handle = CreateIconFromResourceEx(image, length, true, 0x00030000, size, size, 0);
+                if (handle == IntPtr.Zero) throw new InvalidOperationException($"Cannot decode setup frame {size} px.");
+                DestroyIcon(handle);
+                Console.WriteLine($"PASS Windows selected and decoded the exact {size} px setup icon frame.");
+            }
+        }
+        finally { FreeLibrary(module); }
+    }
+}
+'@
+    [InstallerIconTest]::Verify((Resolve-Path -LiteralPath $Installer).Path,
+        (Join-Path $PSScriptRoot 'installer/FaderSyncPlugin.ico'))
+}
+
 function Wait-InstallerWindow($Description, [scriptblock]$Find) {
     for ($attempt = 0; $attempt -lt 120; $attempt++) {
         $window = & $Find
@@ -169,6 +242,7 @@ function Test-ObsStartup($Root) {
 }
 
 try {
+    Test-InstallerIcon
     $obs33 = Join-Path $fixture.FullName 'Portable OBS 33'
     $exe33 = New-Item -ItemType Directory -Force (Join-Path $obs33 'bin/64bit')
     $archive = Get-TestDownload "$obsReleases/33.0.0/OBS-Studio-33.0.0-Windows-x64.zip" `
