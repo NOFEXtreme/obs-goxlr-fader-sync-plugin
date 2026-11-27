@@ -34,11 +34,10 @@ public class SocketClientTest
         using var client = new SocketClient(name);
         await Task.WhenAll(server.WaitForConnectionAsync(timeout.Token), client.ConnectAsync(timeout.Token));
 
-        await client.SendMessageAsync(Message, timeout.Token);
-
         var expected = Encoding.UTF8.GetBytes(Message);
         var frame = new byte[4 + expected.Length];
-        await server.ReadExactlyAsync(frame, timeout.Token);
+        await Task.WhenAll(client.SendMessageAsync(Message, timeout.Token),
+            server.ReadExactlyAsync(frame, timeout.Token).AsTask());
         Assert.That(BinaryPrimitives.ReadUInt32BigEndian(frame), Is.EqualTo(expected.Length));
         Assert.That(frame[4..], Is.EqualTo(expected));
     }
@@ -55,9 +54,11 @@ public class SocketClientTest
         var body = Encoding.UTF8.GetBytes(Message);
         var header = new byte[4];
         BinaryPrimitives.WriteUInt32BigEndian(header, (uint)body.Length);
+        // Windows pipes can wait for a reader before a write completes.
+        var received = client.ReadMessageAsync(timeout.Token);
         await server.WriteAsync(header, timeout.Token);
         await server.WriteAsync(body, timeout.Token);
 
-        Assert.That(await client.ReadMessageAsync(timeout.Token), Is.EqualTo(Message));
+        Assert.That(await received, Is.EqualTo(Message));
     }
 }
