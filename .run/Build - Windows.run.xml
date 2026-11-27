@@ -1,0 +1,10 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Build - Windows" type="ShConfigurationType">
+    <option name="SCRIPT_TEXT" value="pwsh.exe -NoProfile -File ./scripts/build-windows.ps1" />
+    <option name="SCRIPT_WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <option name="INDEPENDENT_SCRIPT_WORKING_DIRECTORY" value="true" />
+    <option name="EXECUTE_IN_TERMINAL" value="true" />
+    <option name="EXECUTE_SCRIPT_FILE" value="false" />
+    <method v="2" />
+  </configuration>
+</component>

@@ -34,7 +34,9 @@ OBS keeps its current volume and mute during a disconnect. Capture the source be
 
 ## Development and credits
 
-Use [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) and the [Native AOT prerequisites](https://learn.microsoft.com/dotnet/core/deploying/native-aot/#prerequisites). Run `scripts/build-linux.sh` on Linux or `scripts/build-windows.ps1` with PowerShell 7 and [Inno Setup 7](https://jrsoftware.org/isdl.php) on Windows. Use `--install` or `-Install` to install the local build.
+Use [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) and the [Native AOT prerequisites](https://learn.microsoft.com/dotnet/core/deploying/native-aot/#prerequisites). Run `bash scripts/build-linux.sh` on Linux or `scripts/build-windows.ps1` with PowerShell 7 and [Inno Setup 7](https://jrsoftware.org/isdl.php) on Windows. Use `--install` or `-Install` to install the local build.
+
+In Rider, open the solution and choose **Build** or **Build & Install** for your OS. The Windows configurations use `pwsh.exe` from `PATH`.
 
 The [original OBS plugin](https://github.com/parzival-space/obs-goxlr-fader-sync-plugin) was written by Malte Linke (Parzival) and is licensed under the [MIT License](LICENSE). It builds on [goxlr-obs-fader-sync](https://github.com/FrostyCoolSlug/goxlr-obs-fader-sync) by Craig McLure (FrostyCoolSlug), who created GoXLR Utility and helped with the port. Thanks to [NetObsBindings](https://github.com/kostya9/NetObsBindings) for the OBS API bindings. This fork is developed by NOFEXtreme.
 

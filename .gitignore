@@ -9,8 +9,7 @@ nupkg/
 .vscode
 
 # Rider
-.ideawi
-.idea/copilot.*.xml
+/.idea/
 
 # User-specific files
 *.suo
@@ -39,6 +38,7 @@ msbuild.wrn
 
 # Test Project (used for local tests)
 /TestProject
+TestResults/
 
 # dotCover reports
 .dotCover/
