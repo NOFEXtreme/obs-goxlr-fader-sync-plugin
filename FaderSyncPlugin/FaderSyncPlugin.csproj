@@ -2,7 +2,7 @@
     
     <PropertyGroup>
         <!-- This Version will be used in CI -->
-        <Version>1.4.0-beta.2</Version>
+        <Version>1.4.0-beta.3</Version>
         <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
         <Copyright>© Malte Linke</Copyright>
     </PropertyGroup>
