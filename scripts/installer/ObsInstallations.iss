@@ -11,9 +11,10 @@ var
   Target: TObsInstall;
   TargetPage: TInputDirWizardPage;
   Instances: TNewComboBox;
-  ModeLabel, StatusLabel: TNewStaticText;
+  StatusLabel, LocationLabel: TNewStaticText;
+  Location: TNewMemo;
   Modes: TNewComboBox;
-  ObsArgument: string;
+  ObsArgument, PreviewRoot: string;
   ModeArgument: Integer;
   Refreshing: Boolean;
 
@@ -216,7 +217,7 @@ begin
   Result := '';
   if Install.Root = '' then Result := 'Select an x64 OBS Studio folder containing bin\64bit\obs64.exe.'
   else if Install.Major < 32 then Result := 'This version requires OBS Studio 32 or newer.'
-  else if Install.Mode = UnknownMode then Result := 'Choose the OBS Studio mode. For silent setup use /MODE.'
+  else if Install.Mode = UnknownMode then Result := 'Choose an installation type. For silent setup use /MODE.'
   else if (Install.Mode = StandardMode) and HasPortableMarker(Install.Root) then
     Result := 'This folder has an OBS portable-mode marker. Select Portable to install for that instance.';
 end;
@@ -238,16 +239,26 @@ begin
     end;
     Preview := RecommendedTarget;
     Modes.Enabled := Preview.Root <> '';
-    if Sender <> Modes then begin
-      if (Sender = nil) and (Preview.Root <> '') and (ModeArgument <> UnknownMode) then
-        Preview.Mode := ModeArgument;
+    if (Sender = nil) and (Preview.Root <> '') and (ModeArgument <> UnknownMode) then
+      Modes.ItemIndex := ModeArgument - 1
+    else if (Sender = nil) or ((Sender <> Modes) and not PathSame(Preview.Root, PreviewRoot)) then
       Modes.ItemIndex := Preview.Mode - 1;
-    end;
+    PreviewRoot := Preview.Root;
     Preview.Mode := Modes.ItemIndex + 1;
     Error := TargetError(Preview);
-    if Error <> '' then StatusLabel.Caption := Error
-    else StatusLabel.Caption := 'OBS ' + Preview.Version + ' (' + ModeName(Preview.Mode) + ')' + #13#10 +
-      ModuleDir(Preview) + '\' + ModuleFile;
+    if Preview.Root = '' then StatusLabel.Caption := Error
+    else begin
+      StatusLabel.Caption := 'Detected OBS Studio: ' + Preview.Version;
+      if Error <> '' then StatusLabel.Caption := StatusLabel.Caption + #13#10 + Error;
+    end;
+    StatusLabel.AdjustHeight;
+    LocationLabel.Visible := Error = '';
+    Location.Visible := LocationLabel.Visible;
+    if Location.Visible then begin
+      LocationLabel.Top := StatusLabel.Top + StatusLabel.Height + ScaleY(8);
+      Location.Top := LocationLabel.Top + LocationLabel.Height + ScaleY(4);
+      Location.Text := ModuleDir(Preview) + '\' + ModuleFile;
+    end;
   finally
     Refreshing := False;
   end;
@@ -258,6 +269,7 @@ var
   I, Top: Integer;
   Multi: Boolean;
   Arg: string;
+  ModeLabel: TNewStaticText;
 begin
   DetectInstallations;
   ObsArgument := ExpandConstant('{param:OBS|}');
@@ -291,22 +303,35 @@ begin
   Top := TargetPage.Edits[0].Top + TargetPage.Edits[0].Height + ScaleY(12);
   ModeLabel := TNewStaticText.Create(WizardForm);
   ModeLabel.Parent := TargetPage.Surface;
-  ModeLabel.Top := Top;
-  ModeLabel.Caption := 'OBS Studio mode:';
+  ModeLabel.Caption := 'Installation type:';
   Modes := TNewComboBox.Create(WizardForm);
   Modes.Parent := TargetPage.Surface;
   Modes.Style := csDropDownList;
   Modes.Items.Add('Standard');
   Modes.Items.Add('Portable');
-  Modes.Top := Top + ScaleY(20);
-  Modes.Width := ScaleX(140);
+  Modes.Top := Top;
+  Modes.Left := ModeLabel.Width + ScaleX(8);
+  Modes.Width := ScaleX(100);
+  ModeLabel.Top := Modes.Top + (Modes.Height - ModeLabel.Height) div 2;
+  ModeLabel.FocusControl := Modes;
   StatusLabel := TNewStaticText.Create(WizardForm);
   StatusLabel.Parent := TargetPage.Surface;
   StatusLabel.AutoSize := False;
   StatusLabel.WordWrap := True;
-  StatusLabel.Top := Modes.Top + Modes.Height + ScaleY(8);
+  StatusLabel.Top := Modes.Top + Modes.Height + ScaleY(14);
   StatusLabel.Width := TargetPage.SurfaceWidth;
-  StatusLabel.Height := ScaleY(60);
+  LocationLabel := TNewStaticText.Create(WizardForm);
+  LocationLabel.Parent := TargetPage.Surface;
+  LocationLabel.Caption := 'Plugin location:';
+  Location := TNewMemo.Create(WizardForm);
+  Location.Parent := TargetPage.Surface;
+  Location.ReadOnly := True;
+  Location.WantReturns := False;
+  Location.WordWrap := True;
+  Location.ScrollBars := ssVertical;
+  Location.Width := TargetPage.SurfaceWidth;
+  Location.Height := ScaleY(45);
+  LocationLabel.FocusControl := Location;
 
   if ObsArgument <> '' then TargetPage.Values[0] := ObsArgument
   else if GetArrayLength(Installs) = 1 then TargetPage.Values[0] := Installs[0].Root;

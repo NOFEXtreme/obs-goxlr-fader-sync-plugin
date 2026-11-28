@@ -14,7 +14,7 @@
   #error Pass the path to the license shown in Setup.
 #endif
 
-#define PluginName "GoXLR Fader Sync Plugin"
+#define PluginName "GoXLR Fader Sync"
 #define DllName "FaderSyncPlugin.dll"
 #define Url "https://github.com/NOFEXtreme/obs-goxlr-fader-sync-plugin"
 #define OriginalLicensePath SourcePath + "..\..\LICENSE"
@@ -23,7 +23,7 @@
 AppName={#PluginName}
 AppId=FaderSyncPlugin-{code:InstallKey}
 AppVersion={#Version}
-AppPublisher=Malte Linke
+AppPublisher=NOFEXtreme
 AppPublisherURL={#Url}
 AppSupportURL={#Url}/issues
 AppUpdatesURL={#Url}/releases

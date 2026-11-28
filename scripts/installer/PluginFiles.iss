@@ -118,12 +118,7 @@ begin
   Files[I].PayloadHash := PayloadHash;
 end;
 
-function BinaryDir(Param: string): string;
-begin
-  Result := ModuleDir(Target);
-end;
-
-function LicenseDir(Param: string): string;
+function LicenseDir: string;
 begin
   if Target.Mode = StandardMode then Result := SharedPluginRoot
   else if Target.Major < 33 then Result := Target.Root + '\data\obs-plugins\' + ModuleName
@@ -132,7 +127,7 @@ end;
 
 function DataDir(Param: string): string;
 begin
-  Result := LicenseDir('');
+  Result := LicenseDir;
   if (Target.Mode <> PortableMode) or (Target.Major >= 33) then Result := Result + '\data';
 end;
 
@@ -175,7 +170,7 @@ begin
   if not FileExists(Path) then Exit;
   if CompareText(ExtractFileName(Path), ModuleFile) = 0 then Owned := IsPluginDll(Path)
   else Owned := IsPluginLicense(Path);
-  if not Owned then RaiseException('This file does not belong to GoXLR Fader Sync Plugin: ' + Path);
+  if not Owned then RaiseException('This file does not belong to {#PluginName}: ' + Path);
 end;
 
 procedure AddLegacyLicense(Path, BackupName: string);
@@ -199,8 +194,8 @@ begin
     BackupRoot := ExpandConstant('{commonappdata}\obs-studio\FaderSyncPlugin-backups');
   end;
 
-  AddFile(BinaryDir('') + '\' + ModuleFile, 'previous.dll', '{#GetSHA256OfFile(PluginBinary)}');
-  AddFile(LicenseDir('') + '\LICENSE', 'previous-LICENSE', LicenseHash);
+  AddFile(ModuleDir(Target) + '\' + ModuleFile, 'previous.dll', '{#GetSHA256OfFile(PluginBinary)}');
+  AddFile(LicenseDir + '\LICENSE', 'previous-LICENSE', LicenseHash);
   AddFile(Modern + '\' + ModuleFile, 'modern.dll', '');
   AddLegacyLicense(Modern + '\LICENSE', 'modern-LICENSE');
   if Target.Mode = StandardMode then
@@ -278,7 +273,7 @@ var
 begin
   SetArrayLength(Instructions, GetArrayLength(Files) + 4);
   Instructions[0] := 'Close OBS Studio.';
-  Instructions[1] := 'Uninstall this GoXLR Fader Sync Plugin from Windows Installed apps.';
+  Instructions[1] := 'Uninstall {#PluginName} from Windows Installed apps.';
   Instructions[2] := 'Copy the files listed below from this backup to their original paths:';
   Instructions[3] := 'To restore a previous installer-managed installation, run its original Setup for the same OBS instance.';
   Count := 4;
@@ -567,8 +562,8 @@ begin
       RaiseException('The plugin installation record is missing.');
     Target.Mode := Mode;
     Target.Major := Major;
-    CheckPluginFile(BinaryDir('') + '\' + ModuleFile);
-    CheckPluginFile(LicenseDir('') + '\LICENSE');
+    CheckPluginFile(ModuleDir(Target) + '\' + ModuleFile);
+    CheckPluginFile(LicenseDir + '\LICENSE');
     Result := True;
   except
     if UninstallGate <> 0 then CloseHandle(UninstallGate);
@@ -583,8 +578,8 @@ var
 begin
   if Step <> usUninstall then Exit;
   RequireClosedObs;
-  Binary := BinaryDir('') + '\' + ModuleFile;
-  License := LicenseDir('') + '\LICENSE';
+  Binary := ModuleDir(Target) + '\' + ModuleFile;
+  License := LicenseDir + '\LICENSE';
   CheckPluginFile(Binary);
   CheckPluginFile(License);
   // Abort before Inno discards the uninstall log if a file cannot be removed.
