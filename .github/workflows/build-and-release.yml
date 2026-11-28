@@ -174,17 +174,32 @@ jobs:
           grep -Fx "info: [FaderSyncPlugin] <Plugin> Loading FaderSyncPlugin v$FADERSYNC_VERSION" obs-check.log
 
   codeql:
-    name: Check C# and Actions with CodeQL
+    name: Check ${{ matrix.language }} with CodeQL
     needs: version
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: csharp
+            build-mode: manual
+          - language: actions
+            build-mode: none
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        if: matrix.language == 'csharp'
+        with:
+          global-json-file: global.json
       - uses: github/codeql-action/init@915412ff23e8b7659517e607487dbeae018f2934 # v4
         with:
-          languages: csharp, actions
-          build-mode: none
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - name: Build the solution for CodeQL
+        if: matrix.build-mode == 'manual'
+        run: dotnet build goxlr-utility-obs-plugins.sln --configuration Release --no-incremental
       - uses: github/codeql-action/analyze@915412ff23e8b7659517e607487dbeae018f2934 # v4
         with:
           output: sarif
@@ -192,20 +207,23 @@ jobs:
           upload: never
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: codeql-sarif
+          name: codeql-sarif-${{ matrix.language }}
           path: sarif/*.sarif
           if-no-files-found: error
-      - name: Check findings against the clean baseline
+      - name: Check CodeQL findings and diagnostics
         shell: bash
+        env:
+          CODEQL_LANGUAGE: ${{ matrix.language }}
         run: |
-          total=0
-          for language in csharp actions; do
-            count=$(jq '[.runs[].results[]] | length' "sarif/$language.sarif")
-            printf '**CodeQL %s**: %s findings\n\n' "$language" "$count" >> "$GITHUB_STEP_SUMMARY"
-            total=$((total + count))
-          done
-          if (( total != 0 )); then
-            echo "Review the CodeQL SARIF findings before releasing." >&2
+          sarif="sarif/$CODEQL_LANGUAGE.sarif"
+          findings=$(jq '[.runs[].results[]] | length' "$sarif")
+          errors=$(jq '[.runs[].invocations[].toolExecutionNotifications[]?
+            | select(.level == "error" or .descriptor.id == "cs/compilation-error"
+                or .descriptor.id == "cs/diagnostics/extraction-errors")] | length' "$sarif")
+          printf '**CodeQL %s** reported %s findings and %s diagnostic errors.\n\n' \
+            "$CODEQL_LANGUAGE" "$findings" "$errors" | tee -a "$GITHUB_STEP_SUMMARY"
+          if (( findings != 0 || errors != 0 )); then
+            echo "Review the CodeQL SARIF findings and diagnostics before releasing." >&2
             exit 1
           fi
 
