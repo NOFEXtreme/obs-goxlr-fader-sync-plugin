@@ -31,40 +31,71 @@ prerelease=false
 if [[ "$tag" == *-beta.* ]]; then prerelease=true; fi
 check_tag
 
-release_id() {
-    gh api --paginate "$api/releases?per_page=100" --jq ".[] | select(.tag_name == \"$tag\") | .id"
+read_release() {
+    local response delay
+    for delay in 1 2 4 0; do
+        if response=$(gh api "$api/releases/$id" 2>&1); then
+            printf '%s\n' "$response"
+            return
+        fi
+        printf '%s\n' "$response" >&2
+        if [[ "$response" != *'(HTTP 404)'* ]] || (( delay == 0 )); then return 1; fi
+        sleep "$delay"
+    done
+}
+
+matches_release() {
+    jq -e --arg tag "$tag" --arg commit "$commit" --argjson pre "$prerelease" --argjson draft "$1" \
+        '.tag_name == $tag and .target_commitish == $commit and .prerelease == $pre and .draft == $draft' > /dev/null
 }
 
 expected_names=$(printf '%s\n' "${files[@]##*/}" | LC_ALL=C sort)
-id=$(release_id)
+id=$(gh api --paginate "$api/releases?per_page=100" --jq ".[] | select(.tag_name == \"$tag\") | .id")
 if [[ -n "$id" ]]; then
-    release=$(gh api "$api/releases/$id")
-    if ! jq -e --arg tag "$tag" --arg commit "$commit" --argjson pre "$prerelease" \
-        '.tag_name == $tag and .target_commitish == $commit and .prerelease == $pre' <<< "$release" > /dev/null; then
-        echo "Existing release $tag does not match commit $commit or the expected release type." >&2
+    if [[ ! "$id" =~ ^[0-9]+$ ]]; then
+        echo "Multiple releases found for $tag." >&2
         exit 1
     fi
-    if jq -e '.draft == false' <<< "$release" > /dev/null; then
+    release=$(read_release)
+    if matches_release false <<< "$release"; then
         names=$(jq -r '.assets[] | select(.state == "uploaded") | .name' <<< "$release" | LC_ALL=C sort)
-        if [[ "$names" != "$expected_names" ]]; then
-            echo "Published release $tag has an unexpected asset list." >&2
-            exit 1
-        fi
+        [[ "$names" == "$expected_names" ]] || { echo "Unexpected asset list for published release $tag." >&2; exit 1; }
         printf 'Release `%s` already exists at `%s`.\n' "$tag" "$commit" >> "$GITHUB_STEP_SUMMARY"
         exit 0
     fi
 else
-    options=(--draft --verify-tag --target "$commit" --title "Release $tag" --generate-notes)
-    if [[ "$prerelease" == true ]]; then options+=(--prerelease --latest=false); fi
-    gh release create "$tag" "${files[@]}" "${options[@]}"
-    id=$(release_id)
-    release=$(gh api "$api/releases/$id")
+    release=$(gh api --method POST "$api/releases" \
+        -f tag_name="$tag" -f target_commitish="$commit" -f name="Release $tag" \
+        -F draft=true -F prerelease="$prerelease" -F generate_release_notes=true -f make_latest=false)
+    id=$(jq -er '.id | numbers' <<< "$release")
 fi
 
-jq -e --arg tag "$tag" --arg commit "$commit" --argjson pre "$prerelease" \
-    '.draft and .tag_name == $tag and .target_commitish == $commit and .prerelease == $pre' <<< "$release" > /dev/null
+if ! matches_release true <<< "$release"; then
+    echo "Draft $tag does not match commit $commit or the expected release type." >&2
+    exit 1
+fi
+
+asset_digests() {
+    jq -r '.assets[] | "\(if .state == "uploaded" then .digest else .state end)  \(.name)"' | LC_ALL=C sort
+}
+
 expected=$(sha256sum -- "${files[@]}" | awk '{sub(/^.*\//, "", $2); print "sha256:" $1 "  " $2}' | LC_ALL=C sort)
-uploaded=$(jq -r '.assets[] | select(.state == "uploaded") | "\(.digest)  \(.name)"' <<< "$release" | LC_ALL=C sort)
+unexpected=$(LC_ALL=C comm -13 <(printf '%s\n' "$expected") <(asset_digests <<< "$release"))
+if [[ -n "$unexpected" ]]; then
+    echo "Draft $tag contains an unexpected or unverified asset." >&2
+    exit 1
+fi
+
+for file in "${files[@]}"; do
+    name=${file##*/}
+    if jq -e --arg name "$name" 'any(.assets[]; .name == $name)' <<< "$release" > /dev/null; then continue; fi
+    gh api --method POST "https://uploads.github.com/$api/releases/$id/assets?name=$name" \
+        -H 'Content-Type: application/octet-stream' --input "$file" --silent
+done
+
+release=$(read_release)
+matches_release true <<< "$release"
+uploaded=$(asset_digests <<< "$release")
 if [[ "$expected" != "$uploaded" ]]; then
     echo "Draft $tag does not contain the exact verified artifacts for $commit." >&2
     diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$uploaded") || true
@@ -72,6 +103,7 @@ if [[ "$expected" != "$uploaded" ]]; then
 fi
 
 check_tag
-gh release edit "$tag" --draft=false --prerelease="$prerelease" --latest="$([[ "$prerelease" == true ]] && echo false || echo true)" --verify-tag
-gh api "$api/releases/$id" | jq -e --argjson pre "$prerelease" '(.draft == false) and (.prerelease == $pre)' > /dev/null
+latest=true
+if [[ "$prerelease" == true ]]; then latest=false; fi
+gh api --method PATCH "$api/releases/$id" -F draft=false -f make_latest="$latest" | matches_release false
 printf 'Published `%s` at `%s` with all six verified assets.\n' "$tag" "$commit" >> "$GITHUB_STEP_SUMMARY"
