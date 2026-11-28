@@ -160,7 +160,7 @@ jobs:
           printf '%s\n' 'b6557ca2059287210332accc94c267094050489cffffc5c832e746e3a418dab0  obs.deb' | sha256sum -c
           dpkg-deb -x obs.deb obs
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libavcodec60 libavformat60 libavutil58 libswresample4 libswscale7 libjansson4 libwayland-client0 libwayland-server0
+          sudo apt-get install -y --no-install-recommends libavcodec60 libavformat60 libavutil58 libswresample4 libswscale7 libjansson4 libpulse0 libwayland-client0 libwayland-server0 libx11-xcb1 libxkbcommon0
           library=$(find "$RUNNER_TEMP/obs/usr" -name libobs.so.30 -print -quit)
           test -n "$library"
           mkdir runtime

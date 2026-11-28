@@ -181,6 +181,8 @@ public static class InstallerTestWindow
     public static IntPtr Find(string className, string caption, uint[] ids)
     {
         var window = IntPtr.Zero;
+        if (string.IsNullOrEmpty(className)) className = null;
+        if (string.IsNullOrEmpty(caption)) caption = null;
         while ((window = FindWindowEx(IntPtr.Zero, window, className, caption)) != IntPtr.Zero)
         {
             GetWindowThreadProcessId(window, out var id);
