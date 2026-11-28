@@ -562,9 +562,9 @@ try {
     $rights = [Security.AccessControl.RegistryRights]::ReadKey -bor [Security.AccessControl.RegistryRights]::ChangePermissions
     $recordKey = $hive.OpenSubKey($key, 'ReadWriteSubTree', $rights)
     if (-not $recordKey) { throw 'Late rollback did not restore the mandatory target registry key.' }
-    $acl = [Microsoft.Win32.RegistryAclExtensions]::GetAccessControl($recordKey)
     $denied = [Microsoft.Win32.RegistryAclExtensions]::GetAccessControl($recordKey)
-    $denied.AddAccessRule([Security.AccessControl.RegistryAccessRule]::new($account, 'SetValue', 'Deny'))
+    $rule = [Security.AccessControl.RegistryAccessRule]::new($account, 'SetValue', 'Deny')
+    $denied.AddAccessRule($rule)
     [Microsoft.Win32.RegistryAclExtensions]::SetAccessControl($recordKey, $denied)
     try {
         $exit = Invoke-Setup $Installer 'target-registration-denied' $obs32
@@ -578,7 +578,8 @@ try {
         if ((Get-Uninstaller $obs32) -ne $oldUninstaller) { throw 'Denied registration changed Installed apps.' }
     }
     finally {
-        [Microsoft.Win32.RegistryAclExtensions]::SetAccessControl($recordKey, $acl)
+        $denied.RemoveAccessRuleSpecific($rule)
+        [Microsoft.Win32.RegistryAclExtensions]::SetAccessControl($recordKey, $denied)
         $recordKey.Dispose()
         $hive.Dispose()
     }
@@ -633,20 +634,22 @@ finally {
         $null = New-Item -ItemType Directory -Force $EvidenceDirectory
         Copy-Item -Path (Join-Path $fixture.FullName '*.log') -Destination $EvidenceDirectory
     }
-    foreach ($root in $testRoots) {
-        $record = @(Get-InstallRecord $root)
-        if ($record.Count -gt 0) {
-            try { $null = Invoke-Setup (Get-Uninstaller $root) 'cleanup' }
-            catch { Write-Warning $_ }
-        }
-        foreach ($remaining in @(Get-InstallRecord $root)) {
-            Remove-Item -LiteralPath $remaining.PSPath -Recurse -Force
-        }
-        $targetKey = Join-Path 'HKLM:\SOFTWARE\FaderSyncPlugin\Installations' (Get-InstallId $root)
-        $targetDirectory = Get-InstallDirectory $root
-        foreach ($path in @($targetKey, $targetDirectory)) {
-            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+    $hive = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64')
+    try {
+        foreach ($root in $testRoots) {
+            $record = @(Get-InstallRecord $root)
+            if ($record.Count -gt 0) {
+                try { $null = Invoke-Setup (Get-Uninstaller $root) 'cleanup' }
+                catch { Write-Warning $_ }
+            }
+            foreach ($remaining in @(Get-InstallRecord $root)) {
+                $hive.DeleteSubKeyTree("SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$($remaining.PSChildName)", $false)
+            }
+            $hive.DeleteSubKeyTree(('SOFTWARE\FaderSyncPlugin\Installations\' + (Get-InstallId $root)), $false)
+            $directory = Get-InstallDirectory $root
+            if (Test-Path -LiteralPath $directory) { Remove-Item -LiteralPath $directory -Recurse -Force }
         }
     }
+    finally { $hive.Dispose() }
     Remove-Item -LiteralPath $fixture.FullName -Recurse -Force
 }
