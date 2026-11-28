@@ -1,7 +1,8 @@
 #requires -Version 7.0
 param(
     [Parameter(Mandatory)][string]$Installer,
-    [Parameter(Mandatory)][string]$PluginBinary
+    [Parameter(Mandatory)][string]$PluginBinary,
+    [switch]$IncludeStandard
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,18 +13,20 @@ $obsReleases = 'https://github.com/obsproject/obs-studio/releases/download'
 $binaryName = 'FaderSyncPlugin.dll'
 $expectedHash = (Get-FileHash $PluginBinary).Hash
 $packagedLicense = Join-Path (Split-Path -Parent $PluginBinary) 'LICENSE'
+$testRoots = [Collections.Generic.List[string]]::new()
 
 function Get-TestDownload($Url, $Hash) {
-    $path = Join-Path $fixture.FullName ([IO.Path]::GetFileName($Url))
+    $path = Join-Path $fixture.FullName ($Hash.Substring(0, 8) + '-' + [IO.Path]::GetFileName($Url))
     Invoke-WebRequest $Url -OutFile $path
     if ((Get-FileHash $path).Hash -ne $Hash) { throw "Test fixture checksum mismatch: $Url" }
     return $path
 }
 
-function Invoke-Setup($Program, $Case, $Root = '') {
+function Invoke-Setup($Program, $Case, $Root = '', $Mode = '') {
     $log = Join-Path $fixture.FullName "$Case.log"
     $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$log`"")
     if ($Root) { $arguments += "/OBS=`"$Root`"" }
+    if ($Mode) { $arguments += "/MODE=$Mode" }
     $process = Start-Process $Program -ArgumentList $arguments -Wait -PassThru
     if ($process.ExitCode -ne 0 -and (Test-Path -LiteralPath $log)) {
         Get-Content -LiteralPath $log | Write-Host
@@ -39,18 +42,47 @@ function Assert-Hashes($Hashes) {
     foreach ($file in $Hashes.GetEnumerator()) { Assert-Hash $file.Key $file.Value }
 }
 
+function Get-InstallId($Root) {
+    if (-not $Root) { return 'standard' }
+    $bytes = [Text.Encoding]::Unicode.GetBytes($Root.ToLowerInvariant())
+    'portable-' + [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+}
+
+function Get-InstallDirectory($Root) {
+    Join-Path $env:ProgramData ('obs-studio\FaderSyncPlugin-installs\' + (Get-InstallId $Root))
+}
+
+function Get-InstallRecord($Root) {
+    $expected = Get-InstallDirectory $Root
+    Get-ChildItem -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' |
+        Get-ItemProperty | Where-Object {
+            $_.InstallLocation -and $_.InstallLocation.TrimEnd('\') -eq $expected -and
+            $_.PSChildName -like 'FaderSyncPlugin-*_is1'
+        }
+}
+
 function Get-Uninstaller($Root) {
-    $displayName = 'GoXLR Fader Sync Plugin (Portable: ' + (Split-Path -Leaf $Root) + ')'
-    $programData = Join-Path $env:ProgramData 'obs-studio/FaderSyncPlugin-installs'
-    $record = Get-ChildItem -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' |
-        Get-ItemProperty | Where-Object { $_.DisplayName -eq $displayName }
-    if (@($record).Count -ne 1) { throw "Expected one registered installation for $Root" }
-    $uninstaller = ([string]$record.UninstallString).Trim('"')
-    if (-not $uninstaller.StartsWith($programData, [StringComparison]::OrdinalIgnoreCase) -or
+    $record = @(Get-InstallRecord $Root)
+    if ($record.Count -ne 1) { throw "Expected one registered installation for $Root" }
+    $uninstaller = ([string]$record[0].UninstallString).Trim('"')
+    if ((Split-Path -Parent $uninstaller) -ne (Get-InstallDirectory $Root) -or
         -not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
         throw "Invalid uninstaller location: $uninstaller"
     }
     return $uninstaller
+}
+
+function Get-SetupProcessIds([uint32]$ProcessId) {
+    $ids = [Collections.Generic.HashSet[uint32]]::new()
+    $null = $ids.Add($ProcessId)
+    $processes = Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId
+    do {
+        $count = $ids.Count
+        foreach ($candidate in $processes) {
+            if ($ids.Contains($candidate.ParentProcessId)) { $null = $ids.Add($candidate.ProcessId) }
+        }
+    } while ($count -ne $ids.Count)
+    [uint32[]]@($ids)
 }
 
 function Test-InstallerIcon {
@@ -143,12 +175,18 @@ using System.Runtime.InteropServices;
 public static class InstallerTestWindow
 {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr FindWindow(string className, string caption);
-    public static IntPtr Wizard() => FindWindow("TWizardForm", null);
-    public static IntPtr CancelConfirmation()
+    private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr previous, string className, string caption);
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    public static IntPtr Find(string className, string caption, uint[] ids)
     {
-        var window = FindWindow(null, "Exit Setup");
-        return window != IntPtr.Zero ? window : FindWindow("#32770", "Setup");
+        var window = IntPtr.Zero;
+        while ((window = FindWindowEx(IntPtr.Zero, window, className, caption)) != IntPtr.Zero)
+        {
+            GetWindowThreadProcessId(window, out var id);
+            if (Array.IndexOf(ids, id) >= 0) return window;
+        }
+        return IntPtr.Zero;
     }
     [DllImport("user32.dll")]
     public static extern IntPtr GetDlgItem(IntPtr dialog, int control);
@@ -159,9 +197,16 @@ public static class InstallerTestWindow
     $log = Join-Path $fixture.FullName 'cancel32.log'
     $process = Start-Process $Installer -ArgumentList "/LOG=`"$log`"", "/OBS=`"$Root`"" -PassThru
     try {
-        $window = Wait-InstallerWindow 'the Inno Setup wizard' { [InstallerTestWindow]::Wizard() }
+        $window = Wait-InstallerWindow 'the Inno Setup wizard' {
+            [InstallerTestWindow]::Find('TWizardForm', $null, (Get-SetupProcessIds $process.Id))
+        }
         if (-not [InstallerTestWindow]::PostMessage($window, 0x0010, 0, 0)) { throw 'Cannot close test wizard.' }
-        $confirm = Wait-InstallerWindow 'Exit Setup' { [InstallerTestWindow]::CancelConfirmation() }
+        $confirm = Wait-InstallerWindow 'Exit Setup' {
+            $ids = Get-SetupProcessIds $process.Id
+            $window = [InstallerTestWindow]::Find($null, 'Exit Setup', $ids)
+            if ($window -eq [IntPtr]::Zero) { $window = [InstallerTestWindow]::Find('#32770', 'Setup', $ids) }
+            $window
+        }
         $answer = 6
         $button = [InstallerTestWindow]::GetDlgItem($confirm, $answer)
         if ($button -eq [IntPtr]::Zero) {
@@ -218,7 +263,8 @@ function Test-ObsStartup($Root) {
                     $log -split '\r?\n' | Where-Object {
                         $_ -match 'Loading FaderSyncPlugin|[ \t]FaderSyncPlugin\.dll\s*$|==== Startup complete'
                     } | Write-Host
-                    Write-Host 'PASS full OBS 32.2.2 started on Windows and loaded the release DLL.'
+                    $obsVersion = (Get-Item (Join-Path $bin 'obs64.exe')).VersionInfo.ProductVersion
+                    Write-Host "PASS full OBS $obsVersion started on Windows and loaded the release DLL."
                     return
                 }
             }
@@ -244,15 +290,10 @@ function Test-ObsStartup($Root) {
 try {
     Test-InstallerIcon
     $obs33 = Join-Path $fixture.FullName 'Portable OBS 33'
-    $exe33 = New-Item -ItemType Directory -Force (Join-Path $obs33 'bin/64bit')
+    $testRoots.Add($obs33)
     $archive = Get-TestDownload "$obsReleases/33.0.0/OBS-Studio-33.0.0-Windows-x64.zip" `
         '3369a3ecd67b5669a8a08d77357f87cc786d1fba42fbbd1054d841a69f6271a7'
-    $zip = [IO.Compression.ZipFile]::OpenRead($archive)
-    try {
-        [IO.Compression.ZipFileExtensions]::ExtractToFile($zip.GetEntry('bin/64bit/obs64.exe'),
-            (Join-Path $exe33.FullName 'obs64.exe'))
-    }
-    finally { $zip.Dispose() }
+    [IO.Compression.ZipFile]::ExtractToDirectory($archive, $obs33)
 
     $old33 = Join-Path $obs33 "obs-plugins/64bit/$binaryName"
     $legacyLicense = Join-Path $obs33 'data/obs-plugins/FaderSyncPlugin/LICENSE'
@@ -284,6 +325,7 @@ try {
     Assert-Hash $oldCopy.FullName $oldHash
     Assert-Hash $oldLicenseCopy.FullName (Get-FileHash $originalLicense).Hash
     Write-Host "PASS OBS 33 migrated the published 1.3.1.2 binary (SHA-256 $oldHash)."
+    Test-ObsStartup $obs33
 
     Set-Content -LiteralPath $old33 'a different file with the same name'
     if ((Invoke-Setup $Installer 'foreign33' $obs33) -eq 0) { throw 'Setup accepted a foreign module.' }
@@ -293,6 +335,7 @@ try {
     Assert-Hash $installed33 $expectedHash
 
     $obs32 = Join-Path $fixture.FullName 'Portable OBS 32'
+    $testRoots.Add($obs32)
     $archive = Get-TestDownload "$obsReleases/32.2.2/OBS-Studio-32.2.2-Windows-x64.zip" `
         '4d6e40e3ab155f56b30de517380566a206d74b63cdf5ad49aa596924768f97e1'
     [IO.Compression.ZipFile]::ExtractToDirectory($archive, $obs32)
@@ -362,6 +405,31 @@ try {
         Assert-Hash (Join-Path $backup.FullName 'previous-LICENSE') $previous[$license32]
     }
     Write-Host 'PASS upgraded the published beta.3 and preserved the contents of the bundled LICENSE backup.'
+
+    $beta4 = Get-TestDownload "$repo/v1.4.0-beta.4/FaderSyncPlugin-win-x64-installer.exe" `
+        'ce728abd0b350ec596fa302fb4da5732cf7f916d9c0ce2dbc2c76ec4d3aa5c33'
+    if ((Invoke-Setup $beta4 'seed-beta4' $obs32) -ne 0) { throw 'Could not seed the published beta.4.' }
+    $oldUninstaller = Get-Uninstaller $obs32
+    $oldLog = [IO.Path]::ChangeExtension($oldUninstaller, '.dat')
+    $registered = Get-InstallRecord $obs32
+    $previous = $settingsHashes.Clone()
+    foreach ($file in @($plugin32, $license32, $oldUninstaller, $oldLog)) { $previous[$file] = (Get-FileHash $file).Hash }
+    $lock = [IO.File]::Open($oldLog, 'Open', 'Read', 'Read')
+    try { $exitCode = Invoke-Setup $Installer 'registration-failure' $obs32 }
+    finally { $lock.Dispose() }
+    $log = Get-Content -Raw (Join-Path $fixture.FullName 'registration-failure.log')
+    if ($exitCode -eq 0 -or $log -notmatch 'Installed plugin file' -or
+        $log -notmatch 'Saving uninstall information' -or $log -notmatch 'Rolling back changes') {
+        throw 'The registration failure did not reach native Inno rollback after installing the payload.'
+    }
+    Assert-Hashes $previous
+    $after = Get-InstallRecord $obs32
+    if ($after.PSPath -ne $registered.PSPath -or $after.UninstallString -ne $registered.UninstallString -or
+        $after.DisplayVersion -ne $registered.DisplayVersion) { throw 'Native rollback did not restore Installed apps.' }
+    Write-Host 'PASS native registration failure restored the beta.4 payload, uninstall EXE, log and Installed apps entry.'
+    if ((Invoke-Setup $Installer 'upgrade-beta4' $obs32) -ne 0) { throw 'Upgrade from beta.4 after native rollback failed.' }
+    Assert-Hash $plugin32 $expectedHash
+    Assert-Hashes $settingsHashes
     Test-ObsStartup $obs32
     foreach ($path in @($settingsHashes.Keys)) {
         $settingsHashes[$path] = (Get-FileHash -LiteralPath $path).Hash
@@ -380,5 +448,44 @@ try {
     }
     Assert-Hashes $settingsHashes
     Write-Host 'PASS independent Portable OBS 32/33 updates and uninstall preserved scenes, profiles, and settings.'
+
+    if ($IncludeStandard) {
+        $shared = Join-Path $env:ProgramData 'obs-studio/plugins/FaderSyncPlugin'
+        if (@(Get-InstallRecord '').Count -gt 0 -or (Test-Path -LiteralPath $shared)) {
+            throw 'Run the Standard scenarios in a clean Windows environment.'
+        }
+        $testRoots.Add('')
+        foreach ($major in @(32, 33)) {
+            $source = if ($major -eq 32) { $obs32 } else { $obs33 }
+            $target = Join-Path $fixture.FullName "Standard OBS $major"
+            $bin = New-Item -ItemType Directory -Force (Join-Path $target 'bin/64bit')
+            Copy-Item -LiteralPath (Join-Path $source 'bin/64bit/obs64.exe') -Destination $bin.FullName
+            if ((Invoke-Setup $Installer "standard-$major" $target 'standard') -ne 0) { throw "OBS $major Standard setup failed." }
+            $binary = if ($major -eq 32) { Join-Path $shared "bin/64bit/$binaryName" } else { Join-Path $shared $binaryName }
+            Assert-Hash $binary $expectedHash
+            Assert-Hash (Join-Path $shared 'LICENSE') (Get-FileHash $packagedLicense).Hash
+            if ((Invoke-Setup (Get-Uninstaller '') "uninstall-standard-$major") -ne 0 -or (Test-Path -LiteralPath $binary)) {
+                throw "OBS $major Standard removal failed."
+            }
+            Write-Host "PASS OBS $major Standard layout and uninstallation."
+        }
+    }
 }
-finally { Remove-Item -LiteralPath $fixture.FullName -Recurse -Force }
+finally {
+    foreach ($root in $testRoots) {
+        $record = @(Get-InstallRecord $root)
+        if ($record.Count -gt 0) {
+            try { $null = Invoke-Setup (Get-Uninstaller $root) 'cleanup' }
+            catch { Write-Warning $_ }
+        }
+        foreach ($remaining in @(Get-InstallRecord $root)) {
+            Remove-Item -LiteralPath $remaining.PSPath -Recurse -Force
+        }
+        $targetKey = Join-Path 'HKLM:\SOFTWARE\FaderSyncPlugin\Installations' (Get-InstallId $root)
+        $targetDirectory = Get-InstallDirectory $root
+        foreach ($path in @($targetKey, $targetDirectory)) {
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+        }
+    }
+    Remove-Item -LiteralPath $fixture.FullName -Recurse -Force
+}

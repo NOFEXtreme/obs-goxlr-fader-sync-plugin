@@ -1,0 +1,232 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [beta]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-and-release-${{ github.ref }}
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+
+jobs:
+  version:
+    name: Resolve build version
+    if: "!github.event.deleted"
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - id: version
+        shell: bash
+        run: |
+          version=0.0.0-dev
+          number='(0|[1-9][0-9]*)'
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            if [[ ! "$GITHUB_REF_NAME" =~ ^v$number\.$number\.$number(-beta\.$number)?$ ]]; then
+              echo "Unsupported release tag: $GITHUB_REF_NAME" >&2
+              exit 1
+            fi
+            version=${GITHUB_REF_NAME#v}
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Build and test Windows packages
+    needs: version
+    runs-on: windows-latest
+    env:
+      FADERSYNC_VERSION: ${{ needs.version.outputs.version }}
+      PLUGIN_OUTPUT: FaderSyncPlugin/bin/Release/net10.0/win-x64
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - name: Install Inno Setup 7.1.1
+        shell: pwsh
+        run: |
+          $setup = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
+          $target = Join-Path $env:RUNNER_TEMP 'Inno Setup 7'
+          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe' -OutFile $setup
+          if ((Get-FileHash $setup).Hash -ne '8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0') {
+              throw 'Inno Setup download checksum mismatch.'
+          }
+          $process = Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR="' + $target + '"') -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Inno Setup installation failed.' }
+          "ISCC=$target\ISCC.exe" >> $env:GITHUB_ENV
+      - name: Test Utility IPC
+        run: dotnet test UtilityClient.Test/UtilityClient.Test.csproj -c Release
+      - name: Publish NativeAOT and compile Setup
+        run: |
+          dotnet --info
+          ./scripts/build-windows.ps1 -InnoCompiler $env:ISCC
+          Copy-Item "$env:PLUGIN_OUTPUT/publish/LICENSE" "$env:PLUGIN_OUTPUT/package/LICENSE"
+      - name: Verify Setup and launch OBS
+        timeout-minutes: 18
+        run: >
+          ./scripts/test-installer.ps1 -Installer "$env:PLUGIN_OUTPUT/package/FaderSyncPlugin-win-x64-installer.exe"
+          -PluginBinary "$env:PLUGIN_OUTPUT/publish/FaderSyncPlugin.dll" -IncludeStandard
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-artifacts
+          path: |
+            ${{ env.PLUGIN_OUTPUT }}/package/*.zip
+            ${{ env.PLUGIN_OUTPUT }}/package/FaderSyncPlugin-win-x64-installer.exe
+            ${{ env.PLUGIN_OUTPUT }}/package/LICENSE
+          compression-level: 0
+          if-no-files-found: error
+
+  linux:
+    name: Build Linux packages on Ubuntu 22.04
+    needs: version
+    runs-on: ubuntu-22.04
+    env:
+      FADERSYNC_VERSION: ${{ needs.version.outputs.version }}
+      PLUGIN_OUTPUT: FaderSyncPlugin/bin/Release/net10.0/linux-x64
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install NativeAOT build dependencies
+        shell: bash
+        run: |
+          if ! command -v clang >/dev/null || [[ ! -f /usr/include/zlib.h ]]; then
+            sudo apt-get update
+            sudo apt-get install -y clang zlib1g-dev
+          fi
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - name: Test Utility IPC
+        run: dotnet test UtilityClient.Test/UtilityClient.Test.csproj -c Release
+      - name: Publish NativeAOT and check the glibc floor
+        shell: bash
+        run: |
+          dotnet --info
+          clang --version
+          ldd --version
+          bash ./scripts/build-linux.sh
+          module="$PLUGIN_OUTPUT/publish/FaderSyncPlugin.so"
+          floor=$(readelf --version-info "$module" | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | cut -d_ -f2 | sort -V | tail -1)
+          printf 'Required glibc is %s\n' "$floor"
+          [[ "$(printf '2.35\n%s\n' "$floor" | sort -V | tail -1)" == 2.35 ]]
+          python3 - "$module" <<'PY'
+          import ctypes
+          import sys
+          plugin = ctypes.CDLL(sys.argv[1])
+          plugin.obs_module_load.restype = ctypes.c_bool
+          assert plugin.obs_module_load() is False
+          PY
+      - name: Verify module, license and archive
+        shell: pwsh
+        run: |
+          ./scripts/verify-packages.ps1 -LinuxDirectory "$env:PLUGIN_OUTPUT/package" -LinuxBinary "$env:PLUGIN_OUTPUT/publish/FaderSyncPlugin.so"
+          Copy-Item "$env:PLUGIN_OUTPUT/publish/LICENSE" "$env:PLUGIN_OUTPUT/package/LICENSE"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: linux-artifacts
+          path: |
+            ${{ env.PLUGIN_OUTPUT }}/package/FaderSyncPlugin-linux-x64.zip
+            ${{ env.PLUGIN_OUTPUT }}/package/LICENSE
+          compression-level: 0
+          if-no-files-found: error
+
+  linux-obs:
+    name: Load the Linux module in OBS
+    needs: linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: linux-artifacts
+          path: artifacts
+      - name: Load against a versioned OBS 32.2.2 library
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          curl --fail --location --retry 3 --output obs.deb https://github.com/obsproject/obs-studio/releases/download/32.2.2/OBS-Studio-32.2.2-Ubuntu-24.04-x86_64.deb
+          printf '%s\n' 'b6557ca2059287210332accc94c267094050489cffffc5c832e746e3a418dab0  obs.deb' | sha256sum -c
+          dpkg-deb -x obs.deb obs
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libavcodec60 libavformat60 libavutil58 libswresample4 libswscale7 libjansson4 libwayland-client0 libwayland-server0
+          library=$(find "$RUNNER_TEMP/obs/usr" -name libobs.so.30 -print -quit)
+          test -n "$library"
+          mkdir runtime
+          cp -L "$library" runtime/libobs.so.30
+          unzip -q "$GITHUB_WORKSPACE/artifacts/FaderSyncPlugin-linux-x64.zip" -d plugin
+          python3 "$GITHUB_WORKSPACE/scripts/test-obs-linux.py" "$PWD/runtime/libobs.so.30" "$PWD/plugin/FaderSyncPlugin/bin/64bit/FaderSyncPlugin.so"
+
+  codeql:
+    name: Check C# and Actions with CodeQL
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@915412ff23e8b7659517e607487dbeae018f2934 # v4
+        with:
+          languages: csharp, actions
+          build-mode: none
+      - uses: github/codeql-action/analyze@915412ff23e8b7659517e607487dbeae018f2934 # v4
+        with:
+          output: sarif
+          # Repository Default Setup owns the uploads to Code Scanning.
+          upload: never
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: codeql-sarif
+          path: sarif/*.sarif
+          if-no-files-found: error
+      - name: Check findings against the clean baseline
+        shell: bash
+        run: |
+          total=0
+          for language in csharp actions; do
+            count=$(jq '[.runs[].results[]] | length' "sarif/$language.sarif")
+            printf '**CodeQL %s**: %s findings\n\n' "$language" "$count" >> "$GITHUB_STEP_SUMMARY"
+            total=$((total + count))
+          done
+          if (( total != 0 )); then
+            echo "Review the CodeQL SARIF findings before releasing." >&2
+            exit 1
+          fi
+
+  release:
+    name: Publish verified release
+    if: github.ref_type == 'tag'
+    needs: [version, windows, linux, linux-obs, codeql]
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          path: artifacts
+          pattern: '*-artifacts'
+      - name: Verify the downloaded packages and write SHA-256 sums
+        shell: pwsh
+        run: >
+          ./scripts/verify-packages.ps1 -WindowsDirectory artifacts/windows-artifacts -LinuxDirectory artifacts/linux-artifacts
+          -WindowsLicense artifacts/windows-artifacts/LICENSE -LinuxLicense artifacts/linux-artifacts/LICENSE
+          -Manifest artifacts/SHA256SUMS.txt
+      - name: Check the tag, draft and uploaded digests
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash ./scripts/publish-release.sh
