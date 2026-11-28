@@ -70,20 +70,13 @@ jobs:
       - name: Publish NativeAOT and compile Setup
         run: |
           dotnet --info
-          ./scripts/build-windows.ps1
+          ./scripts/build-windows.ps1 -InnoCompiler $env:ISCC
           Copy-Item "$env:PLUGIN_OUTPUT/publish/LICENSE" "$env:PLUGIN_OUTPUT/package/LICENSE"
       - name: Verify Setup and launch OBS
         timeout-minutes: 18
         run: >
           ./scripts/test-installer.ps1 -Installer "$env:PLUGIN_OUTPUT/package/FaderSyncPlugin-win-x64-installer.exe"
-          -PluginBinary "$env:PLUGIN_OUTPUT/publish/FaderSyncPlugin.dll" -IncludeStandard
-          -EvidenceDirectory "$env:RUNNER_TEMP/installer-evidence"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: always()
-        with:
-          name: installer-evidence
-          path: ${{ runner.temp }}/installer-evidence
-          if-no-files-found: ignore
+          -PluginBinary "$env:PLUGIN_OUTPUT/publish/FaderSyncPlugin.dll"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-artifacts
