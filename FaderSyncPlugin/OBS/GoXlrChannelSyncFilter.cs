@@ -101,6 +101,20 @@ internal static unsafe partial class GoXlrChannelSyncFilter
         (FilterContext)GCHandle.FromIntPtr((IntPtr)data).Target!;
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void Update(void* data, obs_data* settings)
+    {
+        if (data is null) return;
+        try
+        {
+            GetContext(data).Settings = ReadSettings(settings);
+        }
+        catch (Exception exception)
+        {
+            Log.Error($"Could not update filter settings: {exception.Message}");
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static void Tick(void* data, float seconds)
     {
         if (data is null) return;
@@ -139,9 +153,9 @@ internal static unsafe partial class GoXlrChannelSyncFilter
         if (!TryReadLevel(volume, out level))
             return false;
 
-        foreach (var entry in faders)
+        for (var index = 0; index < faders.Count; index++)
         {
-            if (entry.Value is not JsonObject fader || fader["channel"] is not JsonValue channel ||
+            if (faders.GetAt(index).Value is not JsonObject fader || fader["channel"] is not JsonValue channel ||
                 !channel.TryGetValue<string>(out var channelName))
                 return false;
             if (channelName != settings.ChannelName) continue;
@@ -196,20 +210,6 @@ internal static unsafe partial class GoXlrChannelSyncFilter
         return node is JsonValue value && value.TryGetValue(out level) && level is >= 0 and <= 255;
     }
 
-    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
-    private static void Update(void* data, obs_data* settings)
-    {
-        if (data is null) return;
-        try
-        {
-            GetContext(data).Settings = ReadSettings(settings);
-        }
-        catch (Exception exception)
-        {
-            Log.Error($"Could not update filter settings: {exception.Message}");
-        }
-    }
-
     private static FilterSettings ReadSettings(obs_data* settings)
     {
         fixed (byte* sChannelName = ChannelKey, sDeviceSerial = DeviceKey, sSubmix = SubmixKey,
@@ -219,7 +219,7 @@ internal static unsafe partial class GoXlrChannelSyncFilter
                 ReadString(settings, sDeviceSerial),
                 ReadString(settings, sChannelName),
                 ReadString(settings, sSubmix) == "B",
-                (float)Math.Pow(10, ObsData.obs_data_get_double(settings, (sbyte*)sVolumeOffset) / 20),
+                Math.Pow(10, ObsData.obs_data_get_double(settings, (sbyte*)sVolumeOffset) / 20),
                 ReadString(settings, sMuteBehaviour) == "FADER_VOLUME",
                 ObsData.obs_data_get_bool(settings, (sbyte*)sVerboseLogging) != 0);
         }
@@ -229,7 +229,7 @@ internal static unsafe partial class GoXlrChannelSyncFilter
         Marshal.PtrToStringUTF8((IntPtr)ObsData.obs_data_get_string(settings, (sbyte*)key)) ?? "";
 
     private sealed record FilterSettings(string DeviceSerial, string ChannelName, bool SubmixB,
-        float OffsetMultiplier, bool MuteViaVolume, bool VerboseLogging);
+        double OffsetMultiplier, bool MuteViaVolume, bool VerboseLogging);
 
     private sealed class FilterContext(obs_source* source, FilterSettings settings)
     {
@@ -239,6 +239,7 @@ internal static unsafe partial class GoXlrChannelSyncFilter
         // The video thread owns the last input pair and its calculated state.
         private JsonObject? _lastStatus;
         private FilterSettings? _lastSettings;
+        private int _level = -1;
         private float _volume;
         private bool _muted, _hasState;
 
@@ -254,12 +255,15 @@ internal static unsafe partial class GoXlrChannelSyncFilter
         {
             var status = UtilitySingleton.Status;
             var current = Settings;
-            if (!ReferenceEquals(_lastStatus, status) || !ReferenceEquals(_lastSettings, current))
+            var statusChanged = !ReferenceEquals(_lastStatus, status);
+            if (statusChanged || !ReferenceEquals(_lastSettings, current))
             {
-                var refreshProperties = !ReferenceEquals(_lastStatus, status) &&
+                var refreshProperties = statusChanged &&
                     PropertiesChanged(GetMixers(_lastStatus), GetMixers(status), current);
                 _hasState = TryGetChannelState(status, current, out var level, out _muted);
-                _volume = _hasState ? ChannelVolume.ToObsVolume(level, current.OffsetMultiplier) : 0;
+                if (_hasState && (level != _level || current.OffsetMultiplier != _lastSettings?.OffsetMultiplier))
+                    _volume = ChannelVolume.ToObsVolume(level, current.OffsetMultiplier);
+                _level = _hasState ? level : -1;
                 _lastStatus = status;
                 _lastSettings = current;
                 if (refreshProperties) Obs.obs_source_update_properties(source);

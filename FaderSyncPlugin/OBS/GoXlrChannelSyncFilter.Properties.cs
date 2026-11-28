@@ -92,6 +92,11 @@ internal static unsafe partial class GoXlrChannelSyncFilter
                 ObsProperties.obs_property_list_add_bool(verbose, (sbyte*)off, 0);
                 ObsProperties.obs_property_list_add_bool(verbose, (sbyte*)on, 1);
             }
+
+            fixed (byte* key = "plugin_info"u8,
+                   text = Encoding.UTF8.GetBytes($"GoXLR Fader Sync {Module.Version} · <a href=\"https://github.com/NOFEXtreme/obs-goxlr-fader-sync-plugin\">NOFEXtreme</a>\0"))
+                ObsProperties.obs_properties_add_text(properties, (sbyte*)key, (sbyte*)text, obs_text_type.OBS_TEXT_INFO);
+
             return properties;
         }
         catch (Exception exception)
@@ -139,9 +144,12 @@ internal static unsafe partial class GoXlrChannelSyncFilter
         if (previous?.Count != current?.Count) return true;
         if (current is null) return false;
 
-        foreach (var (serial, mixer) in current)
+        for (var index = 0; index < current.Count; index++)
+        {
+            var (serial, mixer) = current.GetAt(index);
             if (!previous!.TryGetPropertyValue(serial, out var oldMixer) || DeviceType(mixer) != DeviceType(oldMixer))
                 return true;
+        }
 
         return SubmixAvailable(previous, settings.DeviceSerial, settings.ChannelName) !=
                SubmixAvailable(current, settings.DeviceSerial, settings.ChannelName);

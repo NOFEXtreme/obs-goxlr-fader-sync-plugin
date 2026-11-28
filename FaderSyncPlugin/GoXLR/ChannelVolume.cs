@@ -23,9 +23,9 @@ internal static class ChannelVolume
         5547, 5668, 5792, 5919, 6049, 6316, 6455, 6596, 6741, 6888, 7039, 7193, 7351, 7512, 7676, 7844,
     ];
 
-    public static float ToObsVolume(int level, float offsetMultiplier)
+    public static float ToObsVolume(int level, double offsetMultiplier)
     {
         var gain = GainTable[level];
-        return gain == 0 ? 0 : gain / 7844f * offsetMultiplier;
+        return gain == 0 ? 0 : (float)(gain / 7844.0 * offsetMultiplier);
     }
 }

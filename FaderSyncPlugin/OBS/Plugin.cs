@@ -1,73 +1,73 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using FaderSync.GoXLR;
 using ObsInterop;
 
-namespace FaderSync.OBS
+namespace FaderSync.OBS;
+
+public static class Plugin
 {
-    public static class Plugin
+    private static readonly Logger Log = new(nameof(Plugin));
+
+    [UnmanagedCallersOnly(EntryPoint = "obs_module_set_pointer", CallConvs = [typeof(CallConvCdecl)])]
+    public static unsafe void obs_module_set_pointer(obs_module* obsModulePointer)
     {
-        private static readonly Logger Log = new(nameof(Plugin));
+        // Required by libobs even without module-owned data.
+    }
 
-        [UnmanagedCallersOnly(EntryPoint = "obs_module_set_pointer", CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-        public static unsafe void obs_module_set_pointer(obs_module* obsModulePointer)
+    [UnmanagedCallersOnly(EntryPoint = "obs_module_ver", CallConvs = [typeof(CallConvCdecl)])]
+    public static uint obs_module_ver()
+    {
+        var major = (uint)Obs.Version.Major;
+        var minor = (uint)Obs.Version.Minor;
+        var patch = (uint)Obs.Version.Build;
+
+        return (major << 24) | (minor << 16) | patch;
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "obs_module_load", CallConvs = [typeof(CallConvCdecl)])]
+    public static bool obs_module_load()
+    {
+        try
         {
-            // Required by libobs even without module-owned data.
+            ObsLibrary.Bind();
+            Log.Info($"Loading {Module.Name} v{Module.Version}");
+
+            GoXlrChannelSyncFilter.Register();
+
+            UtilitySingleton.Start();
+
+            return true;
         }
-
-        [UnmanagedCallersOnly(EntryPoint = "obs_module_ver", CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-        public static uint obs_module_ver()
+        catch (Exception exception)
         {
-            var major = (uint)Obs.Version.Major;
-            var minor = (uint)Obs.Version.Minor;
-            var patch = (uint)Obs.Version.Build;
-
-            return (major << 24) | (minor << 16) | patch;
+            ReportFailure($"Plugin load failed: {exception.Message}");
+            return false;
         }
+    }
 
-        [UnmanagedCallersOnly(EntryPoint = "obs_module_load", CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-        public static bool obs_module_load()
+    [UnmanagedCallersOnly(EntryPoint = "obs_module_unload", CallConvs = [typeof(CallConvCdecl)])]
+    public static void obs_module_unload()
+    {
+        try
         {
-            try
-            {
-                ObsLibrary.Bind();
-                Log.Info($"Loading {Module.Name} v{Module.Version}");
-
-                GoXlrChannelSyncFilter.Register();
-
-                UtilitySingleton.Start();
-
-                return true;
-            }
-            catch (Exception exception)
-            {
-                ReportFailure($"Plugin load failed: {exception.Message}");
-                return false;
-            }
+            UtilitySingleton.Shutdown();
+            Log.Info("Plugin unloaded.");
         }
-
-        [UnmanagedCallersOnly(EntryPoint = "obs_module_unload", CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-        public static void obs_module_unload()
+        catch (Exception exception)
         {
-            try
-            {
-                UtilitySingleton.Shutdown();
-                Log.Info("Plugin unloaded.");
-            }
-            catch (Exception exception)
-            {
-                ReportFailure($"Plugin shutdown failed: {exception.Message}");
-            }
+            ReportFailure($"Plugin shutdown failed: {exception.Message}");
         }
+    }
 
-        private static void ReportFailure(string message)
+    private static void ReportFailure(string message)
+    {
+        try
         {
-            try
-            {
-                Console.Error.WriteLine($"[FaderSyncPlugin] {message}");
-            }
-            catch (IOException)
-            {
-            }
+            Console.Error.WriteLine($"[FaderSyncPlugin] {message}");
+        }
+        catch (IOException)
+        {
         }
     }
 }
