@@ -17,12 +17,12 @@ $setup = Join-Path $package 'FaderSyncPlugin-win-x64-installer.exe'
 
 if (-not $InnoCompiler) {
     $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-    if ($command) { $InnoCompiler = $command.Source }
-    else {
-        $InnoCompiler = @($env:ProgramFiles, (Join-Path $env:LOCALAPPDATA 'Programs')) |
-            ForEach-Object { Join-Path $_ 'Inno Setup 7/ISCC.exe' } |
-            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-    }
+    $installed = @($env:ProgramFiles, (Join-Path $env:LOCALAPPDATA 'Programs')) |
+        ForEach-Object { Join-Path $_ 'Inno Setup 7/ISCC.exe' }
+    $InnoCompiler = @($command.Source) + @($installed) | Where-Object {
+        $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) -and (Get-Item -LiteralPath $_).VersionInfo.FileMajorPart -ge 7
+    } | Select-Object -First 1
+    if (-not $InnoCompiler) { $InnoCompiler = $command.Source }
 }
 if (-not $InnoCompiler -or -not (Test-Path -LiteralPath $InnoCompiler -PathType Leaf)) {
     throw 'Install Inno Setup 7 or pass its ISCC executable with -InnoCompiler.'

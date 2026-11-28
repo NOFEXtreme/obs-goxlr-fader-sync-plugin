@@ -341,9 +341,17 @@ function Wait-Checkpoint($Process, $Log, $Checkpoint) {
     throw "The test process did not reach $Checkpoint."
 }
 
-function Test-InterruptedSetup($Root, $Binary, $License, $Settings) {
+function Test-InterruptedSetup($Root, $Binary, $License, $Settings, $PreviousInstaller) {
     $diagnostic = New-InterruptedSetup
     foreach ($stage in @('first-file', 'before-uninstall-registration')) {
+        if ($stage -eq 'before-uninstall-registration') {
+            if ((Invoke-Setup $PreviousInstaller 'interrupted-update-seed' $Root) -ne 0) {
+                throw 'Could not seed the previous installation for the interruption test.'
+            }
+            $previousRecord = Get-InstallRecord $Root
+            $previousLog = [IO.Path]::ChangeExtension((Get-Uninstaller $Root), '.dat')
+            $previousLogHash = (Get-FileHash -LiteralPath $previousLog).Hash
+        }
         $log = Join-Path $fixture.FullName "interrupted-$stage.log"
         $process = Start-Process $diagnostic -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', `
             '/NORESTART', "/LOG=`"$log`"", "/OBS=`"$Root`"", "/CHECKPOINT=$stage"
@@ -355,9 +363,11 @@ function Test-InterruptedSetup($Root, $Binary, $License, $Settings) {
             }
             if ($stage -eq 'before-uninstall-registration') {
                 Assert-Hash $License (Get-FileHash $packagedLicense).Hash
-                if (@(Get-InstallRecord $Root).Count -ne 0) {
-                    throw 'The registration checkpoint ran after Inno created Installed apps.'
+                $record = Get-InstallRecord $Root
+                if ($record.DisplayVersion -ne $previousRecord.DisplayVersion) {
+                    throw 'The registration checkpoint ran after Inno replaced Installed apps.'
                 }
+                Assert-Hash $previousLog $previousLogHash
             }
         }
         finally {
@@ -594,7 +604,7 @@ try {
     }
     Assert-Hashes $settingsHashes
     Write-Host 'PASS independent Portable OBS 32/33 updates and uninstall preserved scenes, profiles, and settings.'
-    Test-InterruptedSetup $obs32 $plugin32 $license32 $settingsHashes
+    Test-InterruptedSetup $obs32 $plugin32 $license32 $settingsHashes $beta4
 
     if ($IncludeStandard) {
         $shared = Join-Path $env:ProgramData 'obs-studio/plugins/FaderSyncPlugin'
