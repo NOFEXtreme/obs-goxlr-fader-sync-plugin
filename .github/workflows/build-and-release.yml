@@ -55,7 +55,7 @@ jobs:
         shell: pwsh
         run: |
           $setup = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
-          $target = Join-Path $env:RUNNER_TEMP 'Inno Setup 7'
+          $target = Join-Path $env:LOCALAPPDATA 'Programs/Inno Setup 7'
           Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe' -OutFile $setup
           if ((Get-FileHash $setup).Hash -ne '8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0') {
               throw 'Inno Setup download checksum mismatch.'
@@ -68,7 +68,7 @@ jobs:
       - name: Publish NativeAOT and compile Setup
         run: |
           dotnet --info
-          ./scripts/build-windows.ps1 -InnoCompiler $env:ISCC
+          ./scripts/build-windows.ps1
           Copy-Item "$env:PLUGIN_OUTPUT/publish/LICENSE" "$env:PLUGIN_OUTPUT/package/LICENSE"
       - name: Verify Setup and launch OBS
         timeout-minutes: 18
@@ -125,7 +125,7 @@ jobs:
           module="$PLUGIN_OUTPUT/publish/FaderSyncPlugin.so"
           floor=$(readelf --version-info "$module" | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | cut -d_ -f2 | sort -V | tail -1)
           printf 'Required glibc is %s\n' "$floor"
-          [[ "$(printf '2.35\n%s\n' "$floor" | sort -V | tail -1)" == 2.35 ]]
+          [[ "$(printf '2.34\n%s\n' "$floor" | sort -V | tail -1)" == 2.34 ]]
           python3 - "$module" <<'PY'
           import ctypes
           import sys

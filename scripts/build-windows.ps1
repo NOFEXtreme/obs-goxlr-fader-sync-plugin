@@ -27,6 +27,7 @@ if (-not $InnoCompiler) {
 if (-not $InnoCompiler -or -not (Test-Path -LiteralPath $InnoCompiler -PathType Leaf)) {
     throw 'Install Inno Setup 7 or pass its ISCC executable with -InnoCompiler.'
 }
+Write-Host "Inno Setup compiler is $InnoCompiler"
 
 $versionArgument = @()
 if ($ReleaseVersion) { $versionArgument += "-p:Version=$ReleaseVersion" }

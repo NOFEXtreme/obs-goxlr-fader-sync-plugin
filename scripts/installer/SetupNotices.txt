@@ -2,5 +2,6 @@ This installer uses RemObjects Pascal Script by Carlo Kok and RemObjects Softwar
 https://github.com/remobjects/pascalscript
 
 The Inno Setup loader incorporates the LZMA1 decoder by Igor Pavlov under the Common Public License 1.0 with the linking exception stated in the source.
+The decoder is provided without warranties or conditions. Its contributors are not liable for damages arising from its distribution or use. Any terms that differ from the Common Public License are offered by the distributor alone.
 License: https://opensource.org/license/cpl1-0-txt
 Corresponding source and build files: https://github.com/jrsoftware/issrc/tree/is-7_1_1/Projects/Src/Compression.LZMA1SmallDecompressor/LzmaDecode
