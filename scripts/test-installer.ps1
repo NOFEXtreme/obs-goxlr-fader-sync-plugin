@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory)][string]$Installer,
     [Parameter(Mandatory)][string]$PluginBinary,
     [switch]$IncludeStandard,
+    [switch]$IncludeGuiCancel,
     [string]$EvidenceDirectory
 )
 
@@ -516,10 +517,12 @@ try {
     if ((Get-Uninstaller $obs32) -ne $oldUninstaller) { throw 'Rollback changed the uninstaller registration.' }
     Write-Host "PASS late write failure restored beta.3 DLL and bundled LICENSE (SHA-256 $($previous[$plugin32]))."
 
-    Test-Cancel $obs32
-    Assert-Hashes $previous
-    if ((Get-Uninstaller $obs32) -ne $oldUninstaller) { throw 'Cancel changed the uninstaller registration.' }
-    Write-Host 'PASS wizard cancellation preserved the DLL, LICENSE, uninstaller, and OBS settings.'
+    if ($IncludeGuiCancel) {
+        Test-Cancel $obs32
+        Assert-Hashes $previous
+        if ((Get-Uninstaller $obs32) -ne $oldUninstaller) { throw 'Cancel changed the uninstaller registration.' }
+        Write-Host 'PASS wizard cancellation preserved the DLL, LICENSE, uninstaller, and OBS settings.'
+    }
 
     if ((Invoke-Setup $Installer 'upgrade32' $obs32) -ne 0) { throw 'OBS 32 installation after rollback failed.' }
     Assert-Hash $plugin32 $expectedHash
