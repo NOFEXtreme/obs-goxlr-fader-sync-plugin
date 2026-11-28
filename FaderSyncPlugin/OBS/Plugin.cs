@@ -29,6 +29,7 @@ namespace FaderSync.OBS
         {
             try
             {
+                ObsLibrary.Bind();
                 Log.Info($"Loading {Module.Name} v{Module.Version}");
 
                 GoXlrChannelSyncFilter.Register();
@@ -39,7 +40,7 @@ namespace FaderSync.OBS
             }
             catch (Exception exception)
             {
-                Log.Error($"Plugin load failed: {exception.Message}");
+                ReportFailure($"Plugin load failed: {exception.Message}");
                 return false;
             }
         }
@@ -47,16 +48,26 @@ namespace FaderSync.OBS
         [UnmanagedCallersOnly(EntryPoint = "obs_module_unload", CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
         public static void obs_module_unload()
         {
-            Log.Info("Plugin unloading...");
             try
             {
                 UtilitySingleton.Shutdown();
+                Log.Info("Plugin unloaded.");
             }
             catch (Exception exception)
             {
-                Log.Error($"Plugin shutdown failed: {exception.Message}");
+                ReportFailure($"Plugin shutdown failed: {exception.Message}");
             }
         }
 
+        private static void ReportFailure(string message)
+        {
+            try
+            {
+                Console.Error.WriteLine($"[FaderSyncPlugin] {message}");
+            }
+            catch (IOException)
+            {
+            }
+        }
     }
 }

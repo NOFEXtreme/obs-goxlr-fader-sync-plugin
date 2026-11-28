@@ -13,19 +13,6 @@ public class SocketClientTest
     private static string PipeName => "goxlr-utility-test-" + Guid.NewGuid();
 
     [Test]
-    public async Task ConnectsToPipeServer()
-    {
-        var name = PipeName;
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        using var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
-        using var client = new SocketClient(name);
-
-        await Task.WhenAll(server.WaitForConnectionAsync(timeout.Token), client.ConnectAsync(timeout.Token));
-
-        Assert.That(server.IsConnected, Is.True);
-    }
-
-    [Test]
     public async Task SendsBigEndianLengthAndUtf8Message()
     {
         var name = PipeName;

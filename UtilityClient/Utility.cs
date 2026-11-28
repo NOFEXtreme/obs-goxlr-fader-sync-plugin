@@ -29,6 +29,8 @@ public class Utility : WebsocketClient
         }
 
         var httpSettings = JsonNode.Parse(response)?["Status"]?["config"]?["http_settings"];
+        if (httpSettings?["enabled"]?.GetValue<bool>() == false)
+            throw new InvalidDataException("Enable the HTTP server in GoXLR Utility to synchronize sources.");
         var host = httpSettings?["bind_address"]?.GetValue<string>();
         var port = httpSettings?["port"]?.GetValue<int>();
         if (string.IsNullOrEmpty(host) || port is not (> 0 and <= 65535))
