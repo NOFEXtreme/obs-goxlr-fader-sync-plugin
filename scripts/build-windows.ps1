@@ -16,13 +16,10 @@ $package = Join-Path $pluginOutput 'package'
 $setup = Join-Path $package 'FaderSyncPlugin-win-x64-installer.exe'
 
 if (-not $InnoCompiler) {
-    $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-    $installed = @($env:ProgramFiles, (Join-Path $env:LOCALAPPDATA 'Programs')) |
-        ForEach-Object { Join-Path $_ 'Inno Setup 7/ISCC.exe' }
-    $InnoCompiler = @($command.Source) + @($installed) | Where-Object {
-        $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) -and (Get-Item -LiteralPath $_).VersionInfo.FileMajorPart -ge 7
-    } | Select-Object -First 1
-    if (-not $InnoCompiler) { $InnoCompiler = $command.Source }
+    $InnoCompiler = @($env:ProgramFiles, (Join-Path $env:LOCALAPPDATA 'Programs')) |
+        ForEach-Object { Join-Path $_ 'Inno Setup 7/ISCC.exe' } |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    if (-not $InnoCompiler) { $InnoCompiler = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source }
 }
 if (-not $InnoCompiler -or -not (Test-Path -LiteralPath $InnoCompiler -PathType Leaf)) {
     throw 'Install Inno Setup 7 or pass its ISCC executable with -InnoCompiler.'
@@ -50,7 +47,7 @@ if (Test-Path -LiteralPath $setup) { Remove-Item -LiteralPath $setup }
     "/DPluginBinary=$binary" "/DLicensePath=$license" "/DLicensePagePath=$licensePage" "/O$package" $installer
 if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
 
-& (Join-Path $PSScriptRoot 'verify-packages.ps1') -WindowsDirectory $package -WindowsBinary $binary
+& (Join-Path $PSScriptRoot 'verify-packages.ps1') -WindowsDirectory $package -WindowsBinary $binary -ExpectedVersion $version.Version
 Write-Host "Packages are in $package"
 if ($Install) {
     $process = Start-Process $setup -Wait -PassThru

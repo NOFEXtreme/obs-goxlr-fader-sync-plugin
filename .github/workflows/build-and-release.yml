@@ -62,7 +62,9 @@ jobs:
           }
           $process = Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR="' + $target + '"') -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw 'Inno Setup installation failed.' }
-          "ISCC=$target\ISCC.exe" >> $env:GITHUB_ENV
+          $compiler = Join-Path $target 'ISCC.exe'
+          if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { throw "Inno Setup did not install $compiler." }
+          "ISCC=$compiler" >> $env:GITHUB_ENV
       - name: Test Utility IPC
         run: dotnet test UtilityClient.Test/UtilityClient.Test.csproj -c Release
       - name: Publish NativeAOT and compile Setup
@@ -149,8 +151,10 @@ jobs:
 
   linux-obs:
     name: Load the Linux module in OBS
-    needs: linux
+    needs: [version, linux]
     runs-on: ubuntu-24.04
+    env:
+      FADERSYNC_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -173,7 +177,8 @@ jobs:
           mkdir runtime
           cp -L "$library" runtime/libobs.so.30
           unzip -q "$GITHUB_WORKSPACE/artifacts/FaderSyncPlugin-linux-x64.zip" -d plugin
-          python3 "$GITHUB_WORKSPACE/scripts/test-obs-linux.py" "$PWD/runtime/libobs.so.30" "$PWD/plugin/FaderSyncPlugin/bin/64bit/FaderSyncPlugin.so"
+          python3 "$GITHUB_WORKSPACE/scripts/test-obs-linux.py" "$PWD/runtime/libobs.so.30" "$PWD/plugin/FaderSyncPlugin/bin/64bit/FaderSyncPlugin.so" | tee obs-check.log
+          grep -Fx "info: [FaderSyncPlugin] <Plugin> Loading FaderSyncPlugin v$FADERSYNC_VERSION" obs-check.log
 
   codeql:
     name: Check C# and Actions with CodeQL

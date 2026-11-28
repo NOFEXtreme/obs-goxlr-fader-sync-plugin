@@ -5,7 +5,8 @@ param(
     [string]$LinuxBinary,
     [string]$WindowsLicense,
     [string]$LinuxLicense,
-    [string]$Manifest
+    [string]$Manifest,
+    [string]$ExpectedVersion
 )
 
 $ErrorActionPreference = 'Stop'
@@ -78,6 +79,9 @@ if ($WindowsDirectory) {
         $setupVersion = ([string]$setupInfo.ProductVersion).TrimEnd()
         $pluginVersion = ([string]$pluginInfo.ProductVersion).TrimEnd()
         if ($setupVersion -ne $pluginVersion -or -not $setupVersion) { throw 'Installer and plugin versions differ.' }
+        if ($ExpectedVersion -and $pluginVersion -ne $ExpectedVersion) {
+            throw "Expected version $ExpectedVersion, found $pluginVersion."
+        }
         if (($setupInfo.FileMajorPart, $setupInfo.FileMinorPart, $setupInfo.FileBuildPart, $setupInfo.FilePrivatePart -join '.') -ne $pluginInfo.FileVersion) {
             throw 'Installer and plugin numeric versions differ.'
         }
