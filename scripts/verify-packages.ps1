@@ -3,13 +3,15 @@ param(
     [string]$LinuxDirectory,
     [string]$WindowsBinary,
     [string]$LinuxBinary,
+    [string]$WindowsLicense,
+    [string]$LinuxLicense,
     [string]$Manifest
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$licenseText = (Get-Content -Raw (Join-Path $root 'LICENSE')) + "`n`n" +
-    (Get-Content -Raw (Join-Path $root 'THIRD-PARTY-NOTICES.txt'))
+$licensePrefix = (Get-Content -Raw -LiteralPath (Join-Path $root 'LICENSE')).Replace("`r`n", "`n") +
+    "`n`nThird-party notices for GoXLR Fader Sync Plugin`n"
 $files = [ordered]@{}
 
 function Get-EntryHash($Entry) {
@@ -18,7 +20,7 @@ function Get-EntryHash($Entry) {
     finally { $stream.Dispose() }
 }
 
-function Test-Package($Directory, $Name, $Module, $License, $Data, $ExpectedHash) {
+function Test-Package($Directory, $Name, $Module, $License, $Data, $ExpectedHash, $ExpectedLicenseHash) {
     $path = Join-Path $Directory $Name
     $archive = [IO.Compression.ZipFile]::OpenRead($path)
     try {
@@ -28,17 +30,22 @@ function Test-Package($Directory, $Name, $Module, $License, $Data, $ExpectedHash
         if ($names.Count -ne $expected.Count -or (Compare-Object $expected $names -CaseSensitive)) {
             throw "Unexpected contents in $Name."
         }
-        $reader = [IO.StreamReader]::new($archive.GetEntry($License).Open())
+        $licenseEntry = $archive.GetEntry($License)
+        $reader = [IO.StreamReader]::new($licenseEntry.Open())
         try {
-            if ($reader.ReadToEnd().Replace("`r`n", "`n") -cne $licenseText) { throw "Incorrect license in $Name." }
+            $text = $reader.ReadToEnd().Replace("`r`n", "`n")
+            if (-not $text.StartsWith($licensePrefix, [StringComparison]::Ordinal) -or
+                $text -notmatch '(?m)^\.NET NativeAOT runtime \d+\.\d+\.\d+') { throw "Incorrect license in $Name." }
         }
         finally { $reader.Dispose() }
+        $licenseHash = Get-EntryHash $licenseEntry
+        if ($ExpectedLicenseHash -and $licenseHash -ne $ExpectedLicenseHash) { throw "License mismatch in $Name." }
         $moduleEntry = $archive.GetEntry($Module)
         if ($moduleEntry.Length -eq 0) { throw "Empty module in $Name." }
         $moduleHash = Get-EntryHash $moduleEntry
         if ($ExpectedHash -and $moduleHash -ne $ExpectedHash) { throw "Incorrect module in $Name." }
         $files[$Name] = $path
-        $moduleHash
+        [pscustomobject]@{ Module = $moduleHash; License = $licenseHash }
     }
     finally { $archive.Dispose() }
 }
@@ -46,9 +53,11 @@ function Test-Package($Directory, $Name, $Module, $License, $Data, $ExpectedHash
 if ($WindowsDirectory) {
     $dll = 'FaderSyncPlugin.dll'
     $dllHash = if ($WindowsBinary) { (Get-FileHash $WindowsBinary).Hash }
-    $dllHash = Test-Package $WindowsDirectory 'FaderSyncPlugin-win-x64.zip' "FaderSyncPlugin/$dll" 'FaderSyncPlugin/LICENSE' 'FaderSyncPlugin/data/' $dllHash
-    $null = Test-Package $WindowsDirectory 'FaderSyncPlugin-win-x64-obs32.zip' "FaderSyncPlugin/bin/64bit/$dll" 'FaderSyncPlugin/LICENSE' 'FaderSyncPlugin/data/' $dllHash
-    $null = Test-Package $WindowsDirectory 'FaderSyncPlugin-win-x64-portable.zip' "obs-plugins/64bit/$dll" 'data/obs-plugins/FaderSyncPlugin/LICENSE' '' $dllHash
+    if ($WindowsBinary -and -not $WindowsLicense) { $WindowsLicense = Join-Path (Split-Path -Parent $WindowsBinary) 'LICENSE' }
+    $licenseHash = if ($WindowsLicense) { (Get-FileHash -LiteralPath $WindowsLicense).Hash }
+    $windows = Test-Package $WindowsDirectory 'FaderSyncPlugin-win-x64.zip' "FaderSyncPlugin/$dll" 'FaderSyncPlugin/LICENSE' 'FaderSyncPlugin/data/' $dllHash $licenseHash
+    $null = Test-Package $WindowsDirectory 'FaderSyncPlugin-win-x64-obs32.zip' "FaderSyncPlugin/bin/64bit/$dll" 'FaderSyncPlugin/LICENSE' 'FaderSyncPlugin/data/' $windows.Module $windows.License
+    $null = Test-Package $WindowsDirectory 'FaderSyncPlugin-win-x64-portable.zip' "obs-plugins/64bit/$dll" 'data/obs-plugins/FaderSyncPlugin/LICENSE' '' $windows.Module $windows.License
 
     $name = 'FaderSyncPlugin-win-x64-installer.exe'
     $setup = Join-Path $WindowsDirectory $name
@@ -78,7 +87,9 @@ if ($WindowsDirectory) {
 
 if ($LinuxDirectory) {
     $hash = if ($LinuxBinary) { (Get-FileHash $LinuxBinary).Hash }
-    $null = Test-Package $LinuxDirectory 'FaderSyncPlugin-linux-x64.zip' 'FaderSyncPlugin/bin/64bit/FaderSyncPlugin.so' 'FaderSyncPlugin/LICENSE' 'FaderSyncPlugin/data/' $hash
+    if ($LinuxBinary -and -not $LinuxLicense) { $LinuxLicense = Join-Path (Split-Path -Parent $LinuxBinary) 'LICENSE' }
+    $licenseHash = if ($LinuxLicense) { (Get-FileHash -LiteralPath $LinuxLicense).Hash }
+    $null = Test-Package $LinuxDirectory 'FaderSyncPlugin-linux-x64.zip' 'FaderSyncPlugin/bin/64bit/FaderSyncPlugin.so' 'FaderSyncPlugin/LICENSE' 'FaderSyncPlugin/data/' $hash $licenseHash
 }
 
 if ($files.Count -eq 0) { throw 'Specify the package directory to verify.' }

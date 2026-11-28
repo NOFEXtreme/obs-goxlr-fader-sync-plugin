@@ -10,6 +10,9 @@
 #ifndef LicensePath
   #error Pass the path to the packaged LICENSE.
 #endif
+#ifndef LicensePagePath
+  #error Pass the path to the license shown in Setup.
+#endif
 
 #define PluginName "GoXLR Fader Sync Plugin"
 #define DllName "FaderSyncPlugin.dll"
@@ -36,6 +39,7 @@ PrivilegesRequired=admin
 WizardStyle=modern
 DisableStartupPrompt=yes
 SetupIconFile=FaderSyncPlugin.ico
+LicenseFile={#LicensePagePath}
 DefaultDirName={commonappdata}\obs-studio\FaderSyncPlugin-installs
 DisableDirPage=yes
 DisableProgramGroupPage=yes
@@ -63,14 +67,11 @@ Source: "{#LicensePath}"; Flags: dontcopy
 [Dirs]
 Name: "{code:DataDir}"
 
-[UninstallDelete]
-Type: files; Name: "{code:BinaryDir}\{#DllName}"
-Type: files; Name: "{code:LicenseDir}\LICENSE"
-
 [Registry]
-Root: HKLM; Subkey: "{code:InstallRegistryKey}"; ValueType: string; ValueName: "Root"; ValueData: "{code:SelectedRoot}"; Flags: uninsdeletevalue uninsdeletekeyifempty
-Root: HKLM; Subkey: "{code:InstallRegistryKey}"; ValueType: dword; ValueName: "Mode"; ValueData: "{code:SelectedMode}"; Flags: uninsdeletevalue uninsdeletekeyifempty
-Root: HKLM; Subkey: "{code:InstallRegistryKey}"; ValueType: dword; ValueName: "Major"; ValueData: "{code:SelectedMajor}"; Flags: uninsdeletevalue uninsdeletekeyifempty
+Root: HKLM; Subkey: "{code:InstallRegistryKey}"; ValueType: none; Flags: dontcreatekey uninsdeletekey
+
+[Messages]
+AboutSetupNote=This installer uses RemObjects Pascal Script (Carlo Kok and RemObjects Software). https://github.com/remobjects/pascalscript
 
 [Code]
 const

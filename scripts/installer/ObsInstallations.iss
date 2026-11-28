@@ -31,13 +31,13 @@ end;
 
 function ReadX64Image(Path: string; var Image: AnsiString): Boolean;
 var
-  PE: Integer;
+  PE: Int64;
 begin
   Result := False;
   if not LoadStringFromFile(Path, Image) or (Length(Image) < 64) then Exit;
-  if (Image[1] <> 'M') or (Image[2] <> 'Z') or (Ord(Image[63]) <> 0) or
-    (Ord(Image[64]) <> 0) then Exit;
-  PE := 1 + Ord(Image[61]) + 256 * Ord(Image[62]);
+  if (Image[1] <> 'M') or (Image[2] <> 'Z') then Exit;
+  PE := 1 + Ord(Image[61]) + 256 * Ord(Image[62]) + 65536 * Ord(Image[63]) +
+    Int64(16777216) * Ord(Image[64]);
   if (PE + 5 > Length(Image)) or (Copy(Image, PE, 4) <> 'PE' + #0 + #0) then Exit;
   Result := (Ord(Image[PE + 4]) = $64) and (Ord(Image[PE + 5]) = $86);
 end;
@@ -199,7 +199,7 @@ begin
   end;
 end;
 
-function TargetFromPage: TObsInstall;
+function RecommendedTarget: TObsInstall;
 var
   I, Mode: Integer;
   Root: string;
@@ -208,15 +208,24 @@ begin
   I := FindInstall(NormalizeRoot(Root));
   Mode := UnknownMode;
   if I >= 0 then Mode := Installs[I].Mode;
-  if not ReadObsInstall(Root, Mode, Result) then Exit;
-  if ModeArgument <> UnknownMode then Result.Mode := ModeArgument;
-  if (Result.Mode = UnknownMode) and (Modes.ItemIndex >= 0) then Result.Mode := Modes.ItemIndex + 1;
+  ReadObsInstall(Root, Mode, Result);
+end;
+
+function TargetError(const Install: TObsInstall): string;
+begin
+  Result := '';
+  if Install.Root = '' then Result := 'Select an x64 OBS Studio folder containing bin\64bit\obs64.exe.'
+  else if Install.Major < 32 then Result := 'This version requires OBS Studio 32 or newer.'
+  else if Install.Mode = UnknownMode then Result := 'Choose the OBS Studio mode. For silent setup use /MODE.'
+  else if (Install.Mode = StandardMode) and HasPortableMarker(Install.Root) then
+    Result := 'This folder has an OBS portable-mode marker. Select Portable to install for that instance.';
 end;
 
 procedure UpdateTarget(Sender: TObject);
 var
   Preview: TObsInstall;
   Index: Integer;
+  Error: string;
 begin
   if Refreshing then Exit;
   Refreshing := True;
@@ -227,14 +236,16 @@ begin
         TargetPage.Values[0] := Installs[Index].Root
       else TargetPage.Values[0] := '';
     end;
-    if Sender <> Modes then Modes.ItemIndex := -1;
-    Preview := TargetFromPage;
-    Modes.Visible := (Preview.Root <> '') and
-      (Preview.Mode = UnknownMode) or ((Preview.Root <> '') and (Sender = Modes));
-    ModeLabel.Visible := Modes.Visible;
-    if Preview.Root = '' then StatusLabel.Caption := 'Select the folder containing OBS Studio.'
-    else if Preview.Major < 32 then StatusLabel.Caption := 'This version requires OBS Studio 32 or newer.'
-    else if Preview.Mode = UnknownMode then StatusLabel.Caption := 'Select the mode you use to start OBS Studio.'
+    Preview := RecommendedTarget;
+    Modes.Enabled := Preview.Root <> '';
+    if Sender <> Modes then begin
+      if (Sender = nil) and (Preview.Root <> '') and (ModeArgument <> UnknownMode) then
+        Preview.Mode := ModeArgument;
+      Modes.ItemIndex := Preview.Mode - 1;
+    end;
+    Preview.Mode := Modes.ItemIndex + 1;
+    Error := TargetError(Preview);
+    if Error <> '' then StatusLabel.Caption := Error
     else StatusLabel.Caption := 'OBS ' + Preview.Version + ' (' + ModeName(Preview.Mode) + ')' + #13#10 +
       ModuleDir(Preview) + '\' + ModuleFile;
   finally
@@ -323,32 +334,15 @@ begin
   if Target.Mode = PortableMode then Result := Result + ' (Portable: ' + ExtractFileName(Target.Root) + ')';
 end;
 
-function SelectedRoot(Param: string): string;
-begin
-  Result := Target.Root;
-end;
-
-function SelectedMode(Param: string): string;
-begin
-  Result := IntToStr(Target.Mode);
-end;
-
-function SelectedMajor(Param: string): string;
-begin
-  Result := IntToStr(Target.Major);
-end;
-
 function NextButtonClick(PageID: Integer): Boolean;
 var
   Error: string;
 begin
   Result := True;
   if PageID <> TargetPage.ID then Exit;
-  Target := TargetFromPage;
-  Error := '';
-  if Target.Root = '' then Error := 'Select an x64 OBS Studio folder containing bin\64bit\obs64.exe.'
-  else if Target.Major < 32 then Error := 'This version requires OBS Studio 32 or newer.'
-  else if Target.Mode = UnknownMode then Error := 'Choose Standard or Portable. For silent setup use /MODE.';
+  Target := RecommendedTarget;
+  Target.Mode := Modes.ItemIndex + 1;
+  Error := TargetError(Target);
   if Error <> '' then begin
     SuppressibleMsgBox(Error, mbError, MB_OK, IDOK);
     Result := False;

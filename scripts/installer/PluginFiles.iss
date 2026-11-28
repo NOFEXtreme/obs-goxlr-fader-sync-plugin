@@ -19,8 +19,8 @@ var
   CreatedDirs: TArrayOfString;
   BackupRoot, Backup: string;
   Replacing, Installed: Boolean;
-  PreviousRoot: string;
-  PreviousMode, PreviousMajor: Cardinal;
+  RegistrationBackup: string;
+  PreviousUninstallFiles: TArrayOfString;
   UninstallGate: THandle;
 
 function GetAttributes(Path: string): DWORD;
@@ -39,6 +39,8 @@ function FirstProcess(Handle: THandle; var Entry: TProcessEntry): Boolean;
   external 'Process32FirstW@kernel32.dll stdcall';
 function NextProcess(Handle: THandle; var Entry: TProcessEntry): Boolean;
   external 'Process32NextW@kernel32.dll stdcall';
+function ComputeCrc32(Initial: DWORD; const Data: AnsiString; Size: Integer): DWORD;
+  external 'RtlComputeCrc32@ntdll.dll stdcall setuponly';
 
 procedure RequireClosedObs;
 var
@@ -247,7 +249,8 @@ begin
   Result := '';
   try
     RequireClosedObs;
-    if not ReadObsInstall(Target.Root, Target.Mode, Current) or (Current.Major <> Target.Major) then
+    if not ReadObsInstall(Target.Root, Target.Mode, Current) or
+      (Current.Major <> Target.Major) or (Current.Mode <> Target.Mode) then
       RaiseException('The selected OBS Studio installation changed. Restart Setup and select it again.');
     CheckOtherInstallations;
     PlanFiles;
@@ -273,11 +276,12 @@ var
   Instructions: TArrayOfString;
   CopyPath: string;
 begin
-  SetArrayLength(Instructions, GetArrayLength(Files) + 3);
+  SetArrayLength(Instructions, GetArrayLength(Files) + 4);
   Instructions[0] := 'Close OBS Studio.';
   Instructions[1] := 'Uninstall this GoXLR Fader Sync Plugin from Windows Installed apps.';
   Instructions[2] := 'Copy the files listed below from this backup to their original paths:';
-  Count := 3;
+  Instructions[3] := 'To restore a previous installer-managed installation, run its original Setup for the same OBS instance.';
+  Count := 4;
   for I := 0 to GetArrayLength(Files) - 1 do begin
     CheckPluginFile(Files[I].Path);
     if not FileExists(Files[I].Path) then Continue;
@@ -352,6 +356,86 @@ begin
   end;
 end;
 
+function InstalledAppsKey: string;
+var
+  AppId: AnsiString;
+begin
+  AppId := 'FaderSyncPlugin-' + InstallKey('');
+  // Inno shortens ASCII AppIds over 57 characters when it builds the registry key.
+  Result := AppId;
+  if Length(AppId) > 57 then
+    Result := Copy(Result, 1, 48) + '~' + Format('%.8x', [ComputeCrc32(0, AppId, Length(AppId))]);
+  Result := UninstallKey + Result + '_is1';
+end;
+
+procedure ExportRegistration(Key, Destination: string);
+var
+  ExitCode: Integer;
+begin
+  if not Exec(ExpandConstant('{sys}\reg.exe'), 'export "HKLM\' + Key + '" "' + Destination + '" /y',
+    '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+    RaiseException('Could not back up the existing installation registration.');
+end;
+
+procedure SaveUninstallFile(Path: string);
+var
+  CopyPath: string;
+  Index: Integer;
+begin
+  CheckPath(Path, False);
+  if not FileExists(Path) then Exit;
+  CopyPath := RegistrationBackup + '\' + ExtractFileName(Path);
+  if not CopyFile(Path, CopyPath, True) or (GetSHA256OfFile(CopyPath) <> GetSHA256OfFile(Path)) then
+    RaiseException('Could not back up ' + Path);
+  Index := GetArrayLength(PreviousUninstallFiles);
+  SetArrayLength(PreviousUninstallFiles, Index + 1);
+  PreviousUninstallFiles[Index] := Path;
+end;
+
+procedure SaveRegistration;
+var
+  Path, Name, Key: string;
+begin
+  RegistrationBackup := ExpandConstant('{tmp}\previous-installation');
+  if not CreateDir(RegistrationBackup) then RaiseException('Could not create the installation registration backup.');
+  Key := InstallRegistryKey('');
+  if RegKeyExists(HKLM64, Key) then ExportRegistration(Key, RegistrationBackup + '\target.reg');
+  Key := InstalledAppsKey;
+  if not RegKeyExists(HKLM64, Key) then Exit;
+  ExportRegistration(Key, RegistrationBackup + '\uninstall.reg');
+  if not RegQueryStringValue(HKLM64, Key, 'UninstallString', Path) then Exit;
+  Path := RemoveQuotes(Path);
+  Name := Lowercase(ExtractFileName(Path));
+  if not PathSame(ExtractFileDir(Path), ExpandConstant('{app}')) or (Length(Name) <> 12) or
+    (Copy(Name, 1, 5) <> 'unins') or (Copy(Name, 9, 4) <> '.exe') or
+    (StrToIntDef(Copy(Name, 6, 3), -1) < 0) then
+    RaiseException('The existing uninstaller does not belong to this installation.');
+  SaveUninstallFile(Path);
+  SaveUninstallFile(ChangeFileExt(Path, '.dat'));
+  SaveUninstallFile(ChangeFileExt(Path, '.msg'));
+end;
+
+procedure RestoreRegistration(Key, Name: string);
+var
+  Saved, Current: string;
+  ExitCode: Integer;
+begin
+  Saved := RegistrationBackup + '\' + Name;
+  if RegKeyExists(HKLM64, Key) then begin
+    if FileExists(Saved) then begin
+      Current := RegistrationBackup + '\current.reg';
+      ExportRegistration(Key, Current);
+      if GetSHA256OfFile(Current) = GetSHA256OfFile(Saved) then Exit;
+    end;
+    if not RegDeleteKeyIncludingSubkeys(HKLM64, Key) then
+      RaiseException('Could not clear an incomplete installation registration.');
+  end;
+  if FileExists(Saved) and
+    (not Exec(ExpandConstant('{sys}\reg.exe'), 'import "' + Saved + '"', '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or
+      (ExitCode <> 0)) then
+    RaiseException('Could not restore the previous installation registration.');
+end;
+
 procedure InstallPayload;
 var
   I: Integer;
@@ -363,10 +447,8 @@ begin
   ExtractTemporaryFile(ModuleFile);
   ExtractTemporaryFile('LICENSE');
   RequireClosedObs;
+  SaveRegistration;
   Key := InstallRegistryKey('');
-  RegQueryStringValue(HKLM64, Key, 'Root', PreviousRoot);
-  RegQueryDWordValue(HKLM64, Key, 'Mode', PreviousMode);
-  RegQueryDWordValue(HKLM64, Key, 'Major', PreviousMajor);
   Replacing := True;
 
   for I := 0 to GetArrayLength(Files) - 1 do begin
@@ -381,6 +463,11 @@ begin
     if Files[I].PayloadHash <> '' then Log('Installed plugin file ' + Path)
     else Log('Removed old plugin file ' + Path);
   end;
+
+  if not RegWriteStringValue(HKLM64, Key, 'Root', Target.Root) or
+    not RegWriteDWordValue(HKLM64, Key, 'Mode', Target.Mode) or
+    not RegWriteDWordValue(HKLM64, Key, 'Major', Target.Major) then
+    RaiseException('Could not register the selected OBS installation.');
 end;
 
 procedure CurStepChanged(Step: TSetupStep);
@@ -418,7 +505,7 @@ end;
 procedure DeinitializeSetup;
 var
   I: Integer;
-  Errors, Key: string;
+  Errors, Path, CopyPath, Hash: string;
 begin
   if not Replacing or Installed then Exit;
   Errors := '';
@@ -432,12 +519,26 @@ begin
     end;
   for I := GetArrayLength(CreatedDirs) - 1 downto 0 do RemoveDir(CreatedDirs[I]);
 
-  if PreviousRoot <> '' then begin
-    Key := InstallRegistryKey('');
-    if not RegWriteStringValue(HKLM64, Key, 'Root', PreviousRoot) or
-      not RegWriteDWordValue(HKLM64, Key, 'Mode', PreviousMode) or
-      not RegWriteDWordValue(HKLM64, Key, 'Major', PreviousMajor) then
-      Errors := Errors + #13#10 + 'Could not restore the installation record.';
+  for I := 0 to GetArrayLength(PreviousUninstallFiles) - 1 do begin
+    try
+      Path := PreviousUninstallFiles[I];
+      CopyPath := RegistrationBackup + '\' + ExtractFileName(Path);
+      Hash := GetSHA256OfFile(CopyPath);
+      CheckPath(Path, False);
+      if not FileExists(Path) or (GetSHA256OfFile(Path) <> Hash) then ReplaceFile(CopyPath, Path, Hash);
+    except
+      Errors := Errors + #13#10 + GetExceptionMessage;
+    end;
+  end;
+  try
+    RestoreRegistration(InstallRegistryKey(''), 'target.reg');
+  except
+    Errors := Errors + #13#10 + GetExceptionMessage;
+  end;
+  try
+    RestoreRegistration(InstalledAppsKey, 'uninstall.reg');
+  except
+    Errors := Errors + #13#10 + GetExceptionMessage;
   end;
   if Errors = '' then Log('Previous plugin files restored.')
   else begin
@@ -474,6 +575,21 @@ begin
     UninstallGate := 0;
     SuppressibleMsgBox(GetExceptionMessage, mbError, MB_OK, IDOK);
   end;
+end;
+
+procedure CurUninstallStepChanged(Step: TUninstallStep);
+var
+  Binary, License: string;
+begin
+  if Step <> usUninstall then Exit;
+  RequireClosedObs;
+  Binary := BinaryDir('') + '\' + ModuleFile;
+  License := LicenseDir('') + '\LICENSE';
+  CheckPluginFile(Binary);
+  CheckPluginFile(License);
+  // Abort before Inno discards the uninstall log if a file cannot be removed.
+  if (FileExists(Binary) and not DeleteFile(Binary)) or (FileExists(License) and not DeleteFile(License)) then
+    RaiseException('Close OBS Studio, check access to the plugin files, and try uninstalling again.');
 end;
 
 procedure DeinitializeUninstall;

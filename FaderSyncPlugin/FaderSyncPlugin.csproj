@@ -1,8 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
     
     <PropertyGroup>
-        <!-- This Version will be used in CI -->
-        <Version>1.4.0-beta.4</Version>
+        <Version>0.0.0-dev</Version>
         <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
         <Copyright>© Malte Linke</Copyright>
     </PropertyGroup>
@@ -23,12 +22,43 @@
         <ProjectReference Include="..\UtilityClient\UtilityClient.csproj" />
     </ItemGroup>
     
-    <Target Name="Package" AfterTargets="Publish"
+    <Target Name="GeneratePackageLicense" DependsOnTargets="ResolvePackageAssets;ResolveFrameworkReferences">
+        <ItemGroup>
+            <NoticePack Include="@(ResolvedTargetILCompilerPack)"
+                        Condition="'%(ResolvedTargetILCompilerPack.NuGetPackageId)' == 'Microsoft.NETCore.App.Runtime.NativeAOT.$(RuntimeIdentifier)'" />
+            <NoticeLibrary Include="@(RuntimeCopyLocalItems)"
+                           Condition="'%(RuntimeCopyLocalItems.NuGetPackageId)' == 'NetObsBindings' Or
+                                      '%(RuntimeCopyLocalItems.NuGetPackageId)' == 'JsonPatch.Net' Or
+                                      '%(RuntimeCopyLocalItems.NuGetPackageId)' == 'JsonPointer.Net' Or
+                                      '%(RuntimeCopyLocalItems.NuGetPackageId)' == 'Json.More.Net'">
+                <LicenseFile>%(RuntimeCopyLocalItems.RootDir)%(RuntimeCopyLocalItems.Directory)../../LICENSE</LicenseFile>
+            </NoticeLibrary>
+            <NoticeLibrary Update="@(NoticeLibrary)" Condition="'%(NoticeLibrary.NuGetPackageId)' == 'NetObsBindings'">
+                <LicenseFile>%(NoticeLibrary.LicenseFile).md</LicenseFile>
+            </NoticeLibrary>
+        </ItemGroup>
+        <Error Condition="'@(NoticePack->Count())' != '1' Or '@(NoticeLibrary->Count())' != '4'"
+               Text="The required NativeAOT and plugin license inputs were not resolved." />
+        <PropertyGroup>
+            <NoticePackDirectory>@(NoticePack->'%(PackageDirectory)')</NoticePackDirectory>
+            <NoticePackVersion>@(NoticePack->'%(NuGetPackageVersion)')</NoticePackVersion>
+            <OriginalLicense>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../LICENSE'))</OriginalLicense>
+            <RuntimeLicense>$([System.IO.File]::ReadAllText('$(NoticePackDirectory)/LICENSE.TXT'))</RuntimeLicense>
+            <RuntimeNotices>$([System.IO.File]::ReadAllText('$(NoticePackDirectory)/THIRD-PARTY-NOTICES.TXT'))</RuntimeNotices>
+        </PropertyGroup>
+        <Message Importance="high" Text="Using NativeAOT runtime pack $(RuntimeIdentifier) $(NoticePackVersion) for distribution notices." />
+        <WriteLinesToFile File="$(PublishDir)/LICENSE" Overwrite="true"
+                          Lines="$([MSBuild]::Escape('$(OriginalLicense)&#xA;&#xA;Third-party notices for GoXLR Fader Sync Plugin&#xA;'))" />
+        <WriteLinesToFile File="$(PublishDir)/LICENSE" Overwrite="false"
+                          Lines="$([MSBuild]::Escape('&#xA;%(NoticeLibrary.NuGetPackageId) %(NoticeLibrary.NuGetPackageVersion)&#xA;$([System.IO.File]::ReadAllText('%(NoticeLibrary.LicenseFile)'))'))" />
+        <WriteLinesToFile File="$(PublishDir)/LICENSE" Overwrite="false"
+                          Lines="$([MSBuild]::Escape('&#xA;.NET NativeAOT runtime $(NoticePackVersion)&#xA;$(RuntimeLicense)&#xA;$(RuntimeNotices)'))" />
+    </Target>
+
+    <Target Name="Package" AfterTargets="Publish" DependsOnTargets="GeneratePackageLicense"
             Condition="'$(PublishAot)' == 'true' and ('$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'linux-x64')">
         <PropertyGroup>
             <PackageDir>$([System.IO.Path]::GetFullPath('$(PublishDir)/../package', '$(MSBuildProjectDirectory)'))</PackageDir>
-            <OriginalLicense>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../LICENSE'))</OriginalLicense>
-            <ThirdPartyNotices>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../THIRD-PARTY-NOTICES.txt'))</ThirdPartyNotices>
         </PropertyGroup>
         <ItemGroup>
             <Layout Include="FaderSyncPlugin-win-x64" Condition="'$(RuntimeIdentifier)' == 'win-x64'">
@@ -52,8 +82,6 @@
                 <License>FaderSyncPlugin</License>
             </Layout>
         </ItemGroup>
-        <WriteLinesToFile File="$(PublishDir)/LICENSE" Overwrite="true"
-                          Lines="$([MSBuild]::Escape('$(OriginalLicense)&#xA;&#xA;$(ThirdPartyNotices)'))" />
         <RemoveDir Directories="@(Layout->'$(PackageDir)/%(Identity)')" />
         <MakeDir Directories="$(PackageDir)/%(Layout.Identity)/%(Layout.Bin);$(PackageDir)/%(Layout.Identity)/%(Layout.Data)" />
         <Copy SourceFiles="$(PublishDir)/LICENSE" DestinationFolder="$(PackageDir)/%(Layout.Identity)/%(Layout.License)" />
