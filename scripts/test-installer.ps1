@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory)][string]$Installer,
     [Parameter(Mandatory)][string]$PluginBinary,
-    [switch]$IncludeStandard
+    [switch]$IncludeStandard,
+    [string]$EvidenceDirectory
 )
 
 $ErrorActionPreference = 'Stop'
@@ -289,6 +290,123 @@ function Test-ObsStartup($Root) {
     }
 }
 
+function New-InterruptedSetup {
+    $source = Join-Path $fixture.FullName 'diagnostic/scripts/installer'
+    $null = New-Item -ItemType Directory -Force $source
+    Copy-Item (Join-Path $PSScriptRoot 'installer/*') $source
+    Copy-Item (Join-Path $PSScriptRoot '../LICENSE') (Join-Path $source '../../LICENSE')
+    $files = Join-Path $source 'PluginFiles.iss'
+    $pascal = Get-Content $files -Raw
+    $hook = @'
+procedure Checkpoint(Name: string);
+begin
+  if (ExpandConstant('{param:CHECKPOINT|}') = Name) or
+    ((Name = 'uninstall') and FileExists(ExpandConstant('{app}\hold-uninstall'))) then begin
+    Log('TEST CHECKPOINT: ' + Name);
+    Sleep(30000);
+  end;
+end;
+
+function NeedRestart: Boolean;
+begin
+  Checkpoint('before-uninstall-registration');
+  Result := False;
+end;
+
+'@
+    $pascal = $pascal.Replace('procedure InstallPayload;', $hook + 'procedure InstallPayload;')
+    $pascal = $pascal.Replace('Files[I].Changed := True;', "Files[I].Changed := True;`n    if I = 0 then Checkpoint('first-file');")
+    $pascal = $pascal.Replace('if Step <> usUninstall then Exit;', "if Step <> usUninstall then Exit;`n  Checkpoint('uninstall');")
+    Set-Content $files $pascal -Encoding utf8
+    $output = Join-Path $fixture.FullName 'diagnostic'
+    $version = (Get-Item $PluginBinary).VersionInfo.ProductVersion
+    $fileVersion = (Get-Item $PluginBinary).VersionInfo.FileVersion
+    $licensePage = (Resolve-Path (Join-Path (Split-Path -Parent $PluginBinary) '../setup-license.txt')).Path
+    & $env:ISCC /Qp "/O$output" "/DVersion=$version" "/DFileVersion=$fileVersion" `
+        "/DPluginBinary=$((Resolve-Path $PluginBinary).Path)" "/DLicensePath=$((Resolve-Path $packagedLicense).Path)" `
+        "/DLicensePagePath=$licensePage" (Join-Path $source 'FaderSyncPlugin.iss') | Write-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Could not compile the diagnostic Setup.' }
+    Join-Path $output 'FaderSyncPlugin-win-x64-installer.exe'
+}
+
+function Wait-Checkpoint($Process, $Log, $Checkpoint) {
+    for ($attempt = 0; $attempt -lt 125; $attempt++) {
+        if ($Process.HasExited) { break }
+        if ((Test-Path -LiteralPath $Log) -and (Get-Content $Log -Raw) -match "TEST CHECKPOINT: $Checkpoint") {
+            return
+        }
+        Start-Sleep -Milliseconds 120
+    }
+    Get-Content $Log -ErrorAction SilentlyContinue | Write-Host
+    throw "The test process did not reach $Checkpoint."
+}
+
+function Test-InterruptedSetup($Root, $Binary, $License, $Settings) {
+    $diagnostic = New-InterruptedSetup
+    foreach ($stage in @('first-file', 'before-uninstall-registration')) {
+        $log = Join-Path $fixture.FullName "interrupted-$stage.log"
+        $process = Start-Process $diagnostic -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', `
+            '/NORESTART', "/LOG=`"$log`"", "/OBS=`"$Root`"", "/CHECKPOINT=$stage"
+        try {
+            Wait-Checkpoint $process $log $stage
+            Assert-Hash $Binary $expectedHash
+            if ($stage -eq 'first-file' -and (Test-Path -LiteralPath $License)) {
+                throw 'The first-file checkpoint ran after replacing the license.'
+            }
+            if ($stage -eq 'before-uninstall-registration') {
+                Assert-Hash $License (Get-FileHash $packagedLicense).Hash
+                if (@(Get-InstallRecord $Root).Count -ne 0) {
+                    throw 'The registration checkpoint ran after Inno created Installed apps.'
+                }
+            }
+        }
+        finally {
+            if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }
+        }
+        if ((Invoke-Setup $Installer "recover-$stage" $Root) -ne 0) { throw "Setup did not recover from $stage." }
+        Assert-Hash $Binary $expectedHash
+        Assert-Hash $License (Get-FileHash $packagedLicense).Hash
+        Assert-Hashes $Settings
+        if ((Invoke-Setup (Get-Uninstaller $Root) "remove-recovered-$stage") -ne 0 -or
+            (Test-Path -LiteralPath $Binary) -or (Test-Path -LiteralPath $License) -or
+            @(Get-InstallRecord $Root).Count -ne 0) {
+            throw "Could not remove the installation recovered from $stage."
+        }
+        Write-Host "PASS process tree killed at $stage; unmodified Setup recovered and uninstall succeeded."
+    }
+    if ((Invoke-Setup $diagnostic 'locked-uninstall-seed' $Root) -ne 0) { throw 'Diagnostic Setup failed.' }
+    $uninstaller = Get-Uninstaller $Root
+    $dat = [IO.Path]::ChangeExtension($uninstaller, '.dat')
+    $baseline = @{ $Binary = $expectedHash; $License = (Get-FileHash $packagedLicense).Hash;
+        $uninstaller = (Get-FileHash $uninstaller).Hash; $dat = (Get-FileHash $dat).Hash }
+    $sentinel = Join-Path (Get-InstallDirectory $Root) 'hold-uninstall'
+    $null = New-Item -ItemType File $sentinel
+    $log = Join-Path $fixture.FullName 'locked-uninstall.log'
+    $process = Start-Process $uninstaller -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', `
+        '/NORESTART', "/LOG=`"$log`""
+    $lock = $null
+    try {
+        Wait-Checkpoint $process $log 'uninstall'
+        $lock = [IO.File]::Open($Binary, 'Open', 'Read', 'Read')
+        if (-not $process.WaitForExit(40000)) { throw 'Locked uninstaller timed out.' }
+        if ($process.ExitCode -eq 0 -or (Get-Content $log -Raw) -notmatch 'locked or cannot be replaced') {
+            Get-Content $log | Write-Host
+            throw 'Uninstall did not report the locked DLL.'
+        }
+        Assert-Hashes $baseline
+        if ((Get-Uninstaller $Root) -ne $uninstaller) { throw 'Late uninstall failure lost Installed apps.' }
+    }
+    finally {
+        if ($lock) { $lock.Dispose() }
+        if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }
+        Remove-Item -LiteralPath $sentinel -Force
+    }
+    if ((Invoke-Setup $uninstaller 'retry-locked-uninstall') -ne 0 -or (Test-Path -LiteralPath $Binary) -or
+        @(Get-InstallRecord $Root).Count -ne 0) { throw 'Uninstall could not be retried after unlocking the DLL.' }
+    Assert-Hashes $Settings
+    Write-Host 'PASS locking the DLL after InitializeUninstall preserved the registration and allowed retry.'
+}
+
 try {
     Test-InstallerIcon
     $obs33 = Join-Path $fixture.FullName 'Portable OBS 33'
@@ -429,6 +547,24 @@ try {
     if ($after.PSPath -ne $registered.PSPath -or $after.UninstallString -ne $registered.UninstallString -or
         $after.DisplayVersion -ne $registered.DisplayVersion) { throw 'Native rollback did not restore Installed apps.' }
     Write-Host 'PASS native registration failure restored the beta.4 payload, uninstall EXE, log and Installed apps entry.'
+    $key = 'HKLM:\SOFTWARE\FaderSyncPlugin\Installations\' + (Get-InstallId $obs32)
+    $acl = Get-Acl -LiteralPath $key
+    $denied = Get-Acl -LiteralPath $key
+    $denied.AddAccessRule([Security.AccessControl.RegistryAccessRule]::new($account, 'SetValue', 'Deny'))
+    Set-Acl -LiteralPath $key -AclObject $denied
+    try {
+        $exit = Invoke-Setup $Installer 'target-registration-denied' $obs32
+        $log = Get-Content -Raw (Join-Path $fixture.FullName 'target-registration-denied.log')
+        if ($exit -eq 0 -or $log -notmatch 'Installed plugin file' -or
+            $log -notmatch 'Could not register the selected OBS installation' -or
+            $log -notmatch 'Previous plugin files restored') {
+            throw 'Mandatory target registration did not fail and roll back as expected.'
+        }
+        Assert-Hashes $previous
+        if ((Get-Uninstaller $obs32) -ne $oldUninstaller) { throw 'Denied registration changed Installed apps.' }
+    }
+    finally { Set-Acl -LiteralPath $key -AclObject $acl }
+    Write-Host 'PASS Windows ACL denied mandatory registry writes; Setup returned an error and rolled back.'
     if ((Invoke-Setup $Installer 'upgrade-beta4' $obs32) -ne 0) { throw 'Upgrade from beta.4 after native rollback failed.' }
     Assert-Hash $plugin32 $expectedHash
     Assert-Hashes $settingsHashes
@@ -450,6 +586,7 @@ try {
     }
     Assert-Hashes $settingsHashes
     Write-Host 'PASS independent Portable OBS 32/33 updates and uninstall preserved scenes, profiles, and settings.'
+    Test-InterruptedSetup $obs32 $plugin32 $license32 $settingsHashes
 
     if ($IncludeStandard) {
         $shared = Join-Path $env:ProgramData 'obs-studio/plugins/FaderSyncPlugin'
@@ -474,6 +611,10 @@ try {
     }
 }
 finally {
+    if ($EvidenceDirectory) {
+        $null = New-Item -ItemType Directory -Force $EvidenceDirectory
+        Copy-Item -Path (Join-Path $fixture.FullName '*.log') -Destination $EvidenceDirectory
+    }
     foreach ($root in $testRoots) {
         $record = @(Get-InstallRecord $root)
         if ($record.Count -gt 0) {
