@@ -547,11 +547,15 @@ try {
     if ($after.PSPath -ne $registered.PSPath -or $after.UninstallString -ne $registered.UninstallString -or
         $after.DisplayVersion -ne $registered.DisplayVersion) { throw 'Native rollback did not restore Installed apps.' }
     Write-Host 'PASS native registration failure restored the beta.4 payload, uninstall EXE, log and Installed apps entry.'
-    $key = 'HKLM:\SOFTWARE\FaderSyncPlugin\Installations\' + (Get-InstallId $obs32)
-    $acl = Get-Acl -LiteralPath $key
-    $denied = Get-Acl -LiteralPath $key
+    $key = 'SOFTWARE\FaderSyncPlugin\Installations\' + (Get-InstallId $obs32)
+    $hive = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64')
+    $rights = [Security.AccessControl.RegistryRights]::ReadKey -bor [Security.AccessControl.RegistryRights]::ChangePermissions
+    $recordKey = $hive.OpenSubKey($key, 'ReadWriteSubTree', $rights)
+    if (-not $recordKey) { throw 'Late rollback did not restore the mandatory target registry key.' }
+    $acl = [Microsoft.Win32.RegistryAclExtensions]::GetAccessControl($recordKey)
+    $denied = [Microsoft.Win32.RegistryAclExtensions]::GetAccessControl($recordKey)
     $denied.AddAccessRule([Security.AccessControl.RegistryAccessRule]::new($account, 'SetValue', 'Deny'))
-    Set-Acl -LiteralPath $key -AclObject $denied
+    [Microsoft.Win32.RegistryAclExtensions]::SetAccessControl($recordKey, $denied)
     try {
         $exit = Invoke-Setup $Installer 'target-registration-denied' $obs32
         $log = Get-Content -Raw (Join-Path $fixture.FullName 'target-registration-denied.log')
@@ -563,7 +567,11 @@ try {
         Assert-Hashes $previous
         if ((Get-Uninstaller $obs32) -ne $oldUninstaller) { throw 'Denied registration changed Installed apps.' }
     }
-    finally { Set-Acl -LiteralPath $key -AclObject $acl }
+    finally {
+        [Microsoft.Win32.RegistryAclExtensions]::SetAccessControl($recordKey, $acl)
+        $recordKey.Dispose()
+        $hive.Dispose()
+    }
     Write-Host 'PASS Windows ACL denied mandatory registry writes; Setup returned an error and rolled back.'
     if ((Invoke-Setup $Installer 'upgrade-beta4' $obs32) -ne 0) { throw 'Upgrade from beta.4 after native rollback failed.' }
     Assert-Hash $plugin32 $expectedHash
